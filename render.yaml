@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: taphoa-render
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+      - key: TELEGRAM_CHAT_ID
+      - key: WEBHOOK_SECRET
+      - key: TAPHOA_API_ORDERS_URL
+      - key: TAPHOA_METHOD
+      - key: HEADERS_JSON
+      - key: TAPHOA_BODY_JSON
+      - key: POLL_INTERVAL
+        value: "12"
+      - key: VERIFY_TLS
+        value: "1"
+      - key: DISABLE_POLLER
+        value: "0"
