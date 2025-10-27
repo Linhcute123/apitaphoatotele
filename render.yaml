@@ -8,12 +8,19 @@ services:
     autoDeploy: true
     envVars:
       - key: TELEGRAM_BOT_TOKEN
+        value: ""         # điền trên Dashboard sau khi tạo
       - key: TELEGRAM_CHAT_ID
+        value: ""
       - key: WEBHOOK_SECRET
+        value: "change-me-please"
       - key: TAPHOA_API_ORDERS_URL
+        value: ""         # URL API danh sách đơn (không phải /api/getNotify)
       - key: TAPHOA_METHOD
+        value: "POST"     # hoặc GET
       - key: HEADERS_JSON
+        value: ""         # JSON 1 dòng: cookie, x-csrf-token, user-agent, referer, x-requested-with...
       - key: TAPHOA_BODY_JSON
+        value: ""         # nếu GET để rỗng; nếu POST body JSON thì dán nguyên payload
       - key: POLL_INTERVAL
         value: "12"
       - key: VERIFY_TLS
