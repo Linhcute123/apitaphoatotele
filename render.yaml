@@ -1,6 +1,7 @@
 services:
   - type: web
     name: taphoa-render
+    plan: free             # << dùng gói FREE
     env: python
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
@@ -8,22 +9,26 @@ services:
     autoDeploy: true
     envVars:
       - key: TELEGRAM_BOT_TOKEN
-        value: ""         # điền trên Dashboard sau khi tạo
+        value: ""          # điền thật trên Dashboard sau
       - key: TELEGRAM_CHAT_ID
         value: ""
       - key: WEBHOOK_SECRET
         value: "change-me-please"
+
+      # ==== Poller (kéo danh sách đơn) ====
       - key: TAPHOA_API_ORDERS_URL
-        value: ""         # URL API danh sách đơn (không phải /api/getNotify)
+        value: ""          # URL API danh sách đơn (KHÔNG phải /api/getNotify)
       - key: TAPHOA_METHOD
-        value: "POST"     # hoặc GET
+        value: "POST"      # hoặc GET
       - key: HEADERS_JSON
-        value: ""         # JSON 1 dòng: cookie, x-csrf-token, user-agent, referer, x-requested-with...
+        value: ""          # JSON 1 dòng: cookie, x-csrf-token, user-agent, referer, x-requested-with...
       - key: TAPHOA_BODY_JSON
-        value: ""         # nếu GET để rỗng; nếu POST body JSON thì dán nguyên payload
+        value: ""          # nếu GET để rỗng; nếu POST body JSON thì dán nguyên payload
+
+      # ==== Tuỳ chọn ====
       - key: POLL_INTERVAL
         value: "12"
       - key: VERIFY_TLS
         value: "1"
       - key: DISABLE_POLLER
-        value: "0"
+        value: "0"         # đặt "1" nếu chỉ dùng webhook
