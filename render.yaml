@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: taphoa-render
+    name: taphoatotele
     plan: free             # << dùng gói FREE
     env: python
     buildCommand: pip install -r requirements.txt
