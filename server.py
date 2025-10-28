@@ -3,55 +3,63 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 
-# Load .env khi chạy local; trên Render biến môi trường sẽ được inject sẵn
+# ----- .env (local); trên Render sẽ dùng Environment Variables -----
 try:
     from dotenv import load_dotenv  # type: ignore
     load_dotenv()
 except Exception:
     pass
 
-# ===== ENV =====
+# =================== ENV ===================
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
 WEBHOOK_SECRET     = os.getenv("WEBHOOK_SECRET", "change-me-please")
 
-API_URL       = os.getenv("TAPHOA_API_ORDERS_URL", "")         # ví dụ: https://taphoammo.net/api/getNotify
-API_METHOD    = os.getenv("TAPHOA_METHOD", "POST").upper()      # GET/POST
-HEADERS_ENV   = os.getenv("HEADERS_JSON") or "{}"               # JSON 1 dòng từ cURL
-BODY_JSON_ENV = os.getenv("TAPHOA_BODY_JSON", "")               # nếu POST và có payload JSON
+# API có thể là getNotify (text) hoặc list-orders (JSON)
+API_URL       = os.getenv("TAPHOA_API_ORDERS_URL", "")
+API_METHOD    = os.getenv("TAPHOA_METHOD", "POST").upper()
+HEADERS_ENV   = os.getenv("HEADERS_JSON") or "{}"
+BODY_JSON_ENV = os.getenv("TAPHOA_BODY_JSON", "")
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "12"))
 VERIFY_TLS    = bool(int(os.getenv("VERIFY_TLS", "1")))
 DISABLE_POLLER = os.getenv("DISABLE_POLLER", "0") == "1"
 
-# Parse headers an toàn
 try:
     HEADERS: Dict[str, str] = json.loads(HEADERS_ENV)
 except Exception:
     HEADERS = {}
 
+# =================== APP ===================
 app = FastAPI(title="TapHoa → Telegram (getNotify + cURL parser)")
 
-# ===== Trạng thái bộ nhớ =====
-SEEN_JSON_IDS: set[str] = set()    # (nếu sau này bạn dùng API JSON list-orders)
-LAST_NOTIFY: Optional[str] = None  # chuỗi getNotify lần gần nhất
+SEEN_JSON_IDS: set[str] = set()      # nếu sau này xài JSON list-orders
+LAST_NOTIFY: Optional[str] = None    # lần cuối getNotify (text)
 
-# ===== Utils =====
+# =================== Telegram ===================
 def tg_send(text: str):
+    """Gửi an toàn (chặn lỗi 400: text is too long)."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("[WARN] Missing TELEGRAM_* env")
         return
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    r = requests.post(url, json={
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True
-    }, timeout=20)
-    if r.status_code >= 400:
-        print("Telegram error:", r.status_code, r.text)
 
+    MAX = 3900  # chừa biên cho parse_mode=HTML (HTML entities nở ra)
+    chunks = [text[i:i+MAX] for i in range(0, len(text), MAX)] or [""]
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    for idx, part in enumerate(chunks[:3]):  # tối đa 3 message/1 lần
+        r = requests.post(url, json={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": part,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True
+        }, timeout=20)
+        if r.status_code >= 400:
+            print("Telegram error:", r.status_code, r.text)
+            break
+
+# =================== Helpers ===================
 def _labels_for_notify(parts_len: int) -> List[str]:
-    # Đặt nhãn thân thiện nếu độ dài 7 (thường gặp 0|0|0|0|0|1|0)
+    # hay gặp 7 cột: gắn nhãn c6 là "so_moi" cho dễ nhìn
     if parts_len == 7:
         return ["c1","c2","c3","c4","c5","so_moi","c7"]
     return [f"c{i+1}" for i in range(parts_len)]
@@ -68,7 +76,7 @@ def parse_notify_text(text: str) -> Dict[str, Any]:
 
 def parse_curl_command(curl_text: str) -> Dict[str, Any]:
     """
-    Nhận 'Copy as cURL (bash)' từ Chrome DevTools.
+    Nhận 'Copy as cURL (bash)' từ DevTools.
     Trả về: {"url","method","headers","body"}
     """
     args = shlex.split(curl_text)
@@ -77,7 +85,6 @@ def parse_curl_command(curl_text: str) -> Dict[str, Any]:
     data = None
     url = ""
 
-    # Cho phép cURL dạng: curl 'https://...' -X POST -H 'k:v' --data '{...}'
     i = 0
     while i < len(args):
         a = args[i]
@@ -93,7 +100,6 @@ def parse_curl_command(curl_text: str) -> Dict[str, Any]:
             i += 1
             if i < len(args):
                 h = args[i]
-                # Header có thể là "k: v" hoặc "k:    v"
                 if ":" in h:
                     k, v = h.split(":", 1)
                     headers[k.strip()] = v.strip()
@@ -103,18 +109,16 @@ def parse_curl_command(curl_text: str) -> Dict[str, Any]:
                 data = args[i]
         i += 1
 
-    # Nếu không có -X nhưng có --data thì mặc định POST
     if method == "GET" and data is not None:
         method = "POST"
-
     return {"url": url, "method": method, "headers": headers, "body": data}
 
-# ====== Poller chính ======
+# =================== Poller ===================
 def poll_once():
     """
-    Một vòng polling:
-    - Nếu response parse được JSON → (để tương lai dùng list-orders).
-    - Không phải JSON → coi là getNotify (text).
+    - Nếu response parse được JSON → gửi đủ thông tin đơn (tương lai).
+    - Nếu không phải JSON → coi là getNotify (text).
+    - Nhận diện HTML (Cloudflare/đăng nhập) → gửi cảnh báo + preview.
     """
     global LAST_NOTIFY, API_URL, API_METHOD, HEADERS, BODY_JSON_ENV
 
@@ -130,13 +134,13 @@ def poll_once():
             except Exception:
                 body_json = None
 
-        # Call
+        # call
         if API_METHOD == "POST":
             r = requests.post(API_URL, headers=HEADERS, json=body_json, verify=VERIFY_TLS, timeout=25)
         else:
             r = requests.get(API_URL, headers=HEADERS, verify=VERIFY_TLS, timeout=25)
 
-        # 1) Thử JSON trước (để không phá nếu sau này bạn đổi sang API JSON)
+        # 1) thử JSON trước (để tương lai bạn đổi sang API list-orders)
         try:
             data = r.json()
         except Exception:
@@ -152,7 +156,7 @@ def poll_once():
                     if isinstance(v, list):
                         rows = [x for x in v if isinstance(x, dict)]
                         break
-                if not rows:
+                if not rows:  # lồng 1 lớp
                     for v in data.values():
                         if isinstance(v, dict):
                             for key in ("data","items","rows","list","orders","result","content"):
@@ -162,29 +166,59 @@ def poll_once():
                                     break
                         if rows:
                             break
-
             if rows:
                 sent = 0
                 for o in rows:
-                    uid = str(o.get("order_id") or o.get("id") or hashlib.md5(json.dumps(o, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest())
+                    uid = str(o.get("order_id") or o.get("id") or hashlib.md5(
+                        json.dumps(o, sort_keys=True, ensure_ascii=False).encode("utf-8")
+                    ).hexdigest())
                     if uid in SEEN_JSON_IDS:
                         continue
                     SEEN_JSON_IDS.add(uid)
                     buyer = html.escape(str(o.get("buyer_name") or o.get("buyer") or o.get("customer") or "N/A"))
                     total = o.get("total") or o.get("grand_total") or o.get("price_total")
-                    msg = f"🛒 <b>ĐƠN MỚI</b>\n• Mã: <b>{html.escape(uid)}</b>\n• Người mua: <b>{buyer}</b>\n• Tổng: <b>{total}</b>"
+                    msg = (
+                        f"🛒 <b>ĐƠN MỚI</b>\n"
+                        f"• Mã: <b>{html.escape(uid)}</b>\n"
+                        f"• Người mua: <b>{buyer}</b>\n"
+                        f"• Tổng: <b>{total}</b>"
+                    )
                     tg_send(msg)
                     sent += 1
                 if sent:
                     print(f"Sent {sent} order(s) from JSON API.")
-                return  # đã xong JSON
+                return  # kết thúc nếu là JSON
 
-        # 2) Không phải JSON → coi là getNotify (text)
+        # 2) không phải JSON → text (getNotify)
         text = (r.text or "").strip()
         if not text:
             print("getNotify: empty response")
             return
 
+        # Nhận diện HTML (Cloudflare/login…) và gửi preview ngắn
+        low = text[:200].lower()
+        if low.startswith("<!doctype") or "<html" in low:
+            preview = html.escape(text[:800])
+            msg = (
+                "⚠️ <b>getNotify trả về HTML</b> (có thể cookie/CF token hết hạn hoặc header thiếu).\n"
+                f"Độ dài: {len(text)} ký tự. Preview:\n<code>{preview}</code>\n"
+                "→ Cập nhật HEADERS_JSON bằng 'Copy as cURL (bash)': cookie, x-csrf-token, user-agent, referer, x-requested-with…"
+            )
+            tg_send(msg)
+            print("HTML detected, preview sent. Probably headers/cookie expired.")
+            return
+
+        # Text quá dài → rút gọn để tránh 400
+        if len(text) > 1200:
+            preview = html.escape(text[:1200])
+            msg = (
+                "ℹ️ <b>getNotify (rút gọn)</b>\n"
+                f"Độ dài: {len(text)} ký tự. Preview:\n<code>{preview}</code>"
+            )
+            tg_send(msg)
+            return
+
+        # So sánh với lần trước
         if text != LAST_NOTIFY:
             LAST_NOTIFY = text
             parsed = parse_notify_text(text)
@@ -210,7 +244,7 @@ def poller_loop():
         time.sleep(POLL_INTERVAL)
         poll_once()
 
-# ====== API ======
+# =================== API endpoints ===================
 @app.get("/healthz")
 def health():
     return {
@@ -237,7 +271,6 @@ async def debug_parse_curl(req: Request, secret: str):
     body = await req.json()
     curl_txt = str(body.get("curl") or "")
     parsed = parse_curl_command(curl_txt)
-    # Trả về để bạn copy vào env
     return {
         "ok": True,
         "parsed": parsed,
@@ -252,8 +285,7 @@ async def debug_parse_curl(req: Request, secret: str):
 @app.post("/debug/set-curl")
 async def debug_set_curl(req: Request, secret: str):
     """
-    Apply cURL tạm thời trong process (không ghi file), rồi poll ngay 1 vòng.
-    Dùng để test nhanh trên Render.
+    Áp cURL tạm thời trong process (không ghi ENV). Dùng để test nhanh trên Render.
     """
     if secret != WEBHOOK_SECRET:
         raise HTTPException(status_code=401, detail="unauthorized")
@@ -276,12 +308,12 @@ async def debug_set_curl(req: Request, secret: str):
             "headers": HEADERS,
             "body": BODY_JSON_ENV
         },
-        "note": "Applied for this process only. Update env on Render to persist."
+        "note": "Applied for current process only. Update Render Environment to persist."
     }
 
 @app.post("/taphoammo")
 async def taphoammo(request: Request):
-    """Giữ webhook để bạn test thủ công nếu cần (không bắt buộc dùng)."""
+    """Webhook dự phòng (không bắt buộc dùng)."""
     if request.headers.get("X-Auth-Secret") != WEBHOOK_SECRET:
         raise HTTPException(status_code=401, detail="unauthorized")
     try:
@@ -294,6 +326,7 @@ async def taphoammo(request: Request):
     tg_send(msg)
     return {"ok": True}
 
+# =================== START ===================
 def _maybe_start():
     if DISABLE_POLLER:
         print("Poller disabled by env.")
