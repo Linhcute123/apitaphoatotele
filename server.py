@@ -75,9 +75,12 @@ def parse_notify_text(text: str) -> Dict[str, Any]:
         return {"raw": s, "numbers": nums, "table": table}
     return {"raw": s}
 
+# ----- [TOOL CHỈNH SỬA TỰ ĐỘNG] -----
+# Hàm này đã được nâng cấp để tự động xử lý cURL thô
 def parse_curl_command(curl_text: str) -> Dict[str, Any]:
     """
-    Nhận 'Copy as cURL (bash)' từ DevTools.
+    [ĐÃ CẬP NHẬT] Nhận 'Copy as cURL (bash)' từ DevTools.
+    Tự động xử lý -b (cookie) và -H (header), và lọc bỏ header rác.
     Trả về: {"url","method","headers","body"}
     """
     args = shlex.split(curl_text)
@@ -104,6 +107,13 @@ def parse_curl_command(curl_text: str) -> Dict[str, Any]:
                 if ":" in h:
                     k, v = h.split(":", 1)
                     headers[k.strip()] = v.strip()
+        # ----- TỰ ĐỘNG XỬ LÝ -b -----
+        elif a in ("-b", "--cookie"):
+            i += 1
+            if i < len(args):
+                # Tự động đổi -b 'value' thành -H 'cookie: value'
+                headers['cookie'] = args[i]
+        # ----- KẾT THÚC PHẦN THÊM -----
         elif a in ("--data", "--data-raw", "--data-binary", "-d"):
             i += 1
             if i < len(args):
@@ -112,7 +122,29 @@ def parse_curl_command(curl_text: str) -> Dict[str, Any]:
 
     if method == "GET" and data is not None:
         method = "POST"
-    return {"url": url, "method": method, "headers": headers, "body": data}
+    
+    # ----- TỰ ĐỘNG DỌN DẸP HEADER RÁC -----
+    final_headers: Dict[str, str] = {}
+    # Các header rác thường thấy
+    junk_prefixes = ('sec-ch-ua', 'sec-fetch-', 'priority', 'accept', 'content-length')
+    for key, value in headers.items():
+        low_key = key.lower()
+        is_junk = False
+        for prefix in junk_prefixes:
+            if low_key.startswith(prefix):
+                is_junk = True
+                break
+        if not is_junk:
+            final_headers[key] = value
+    # ----- KẾT THÚC PHẦN DỌN DẸP -----
+
+    # Nếu không lọc được gì (ví dụ: cURL quá lạ), trả về bản gốc
+    if not final_headers and headers:
+         return {"url": url, "method": method, "headers": headers, "body": data}
+
+    return {"url": url, "method": method, "headers": final_headers, "body": data}
+# ----- [HẾT TOOL CHỈNH SỬA TỰ ĐỘNG] -----
+
 
 # =================== Poller ===================
 def poll_once():
@@ -224,14 +256,14 @@ def poll_once():
             LAST_NOTIFY = text
             parsed = parse_notify_text(text)
             
-            # ----- [CẬP NHẬT] BỘ LỌC TẤT CẢ SỐ BẰNG 0 -----
+            # ----- BỘ LỌC TẤT CẢ SỐ BẰNG 0 -----
             if "numbers" in parsed:
                 nums = parsed["numbers"]
                 # Kiểm tra xem TẤT CẢ các số có bằng 0 không
                 if nums and all(n == 0 for n in nums):
                     print(f"getNotify changed, but skipping (all numbers are 0). Raw: {text}")
                     return  # Dừng lại, không gửi thông báo
-            # ----- [CẬP NHẬT] KẾT THÚC BỘ LỌC -----
+            # ----- KẾT THÚC BỘ LỌC -----
 
             if "numbers" in parsed:
                 tbl = parsed["table"]
