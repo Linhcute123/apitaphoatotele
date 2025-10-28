@@ -1,10 +1,9 @@
-
-import os, json, time, threading, html, hashlib, requests
-from typing import Any, Dict, List
+import os, json, time, threading, html, hashlib, requests, re, shlex
+from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 
-# Load .env locally if present (Render will inject env vars itself)
+# Load .env khi chạy local; trên Render biến môi trường sẽ được inject sẵn
 try:
     from dotenv import load_dotenv  # type: ignore
     load_dotenv()
@@ -16,72 +15,28 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
 WEBHOOK_SECRET     = os.getenv("WEBHOOK_SECRET", "change-me-please")
 
-API_URL       = os.getenv("TAPHOA_API_ORDERS_URL", "")
-API_METHOD    = os.getenv("TAPHOA_METHOD", "POST").upper()
-HEADERS_ENV   = os.getenv("HEADERS_JSON") or "{}"
-BODY_JSON_ENV = os.getenv("TAPHOA_BODY_JSON", "")
+API_URL       = os.getenv("TAPHOA_API_ORDERS_URL", "")         # ví dụ: https://taphoammo.net/api/getNotify
+API_METHOD    = os.getenv("TAPHOA_METHOD", "POST").upper()      # GET/POST
+HEADERS_ENV   = os.getenv("HEADERS_JSON") or "{}"               # JSON 1 dòng từ cURL
+BODY_JSON_ENV = os.getenv("TAPHOA_BODY_JSON", "")               # nếu POST và có payload JSON
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "12"))
 VERIFY_TLS    = bool(int(os.getenv("VERIFY_TLS", "1")))
 DISABLE_POLLER = os.getenv("DISABLE_POLLER", "0") == "1"
 
-# Parse headers once (avoid crash if wrong JSON)
+# Parse headers an toàn
 try:
-    HEADERS = json.loads(HEADERS_ENV)
+    HEADERS: Dict[str, str] = json.loads(HEADERS_ENV)
 except Exception:
     HEADERS = {}
 
-app = FastAPI(title="TapHoa → Telegram (web+poller)")
+app = FastAPI(title="TapHoa → Telegram (getNotify + cURL parser)")
 
-# Chống gửi trùng (giữ tối đa SEEN_MAX id)
-SEEN: set[str] = set()
-SEEN_MAX = 5000
+# ===== Trạng thái bộ nhớ =====
+SEEN_JSON_IDS: set[str] = set()    # (nếu sau này bạn dùng API JSON list-orders)
+LAST_NOTIFY: Optional[str] = None  # chuỗi getNotify lần gần nhất
 
-def fmt_vnd(v: Any) -> str:
-    """Format VND with thousand separators and 'đ' suffix."""
-    try:
-        if v is None: return "N/A"
-        if isinstance(v, str):
-            v = v.replace(".", "").replace(",", ".")
-        n = float(v)
-        return f"{int(n):,}".replace(",", ".") + "đ"
-    except Exception:
-        return str(v)
-
-def pick(d: Dict, keys: List[str], default=None):
-    """Pick first non-empty value among keys."""
-    for k in keys:
-        if k in d and d[k] not in (None, ""):
-            return d[k]
-    return default
-
-def order_to_msg(o: Dict) -> str:
-    """Build Telegram message (HTML) from order dict with flexible keys."""
-    oid   = pick(o, ["order_id","id","code","order_code","ma_don_hang"], "N/A")
-    date  = pick(o, ["created_at","date","time","ngay_ban"], "N/A")
-    buyer = pick(o, ["buyer_name","buyer","customer","username","nguoi_mua"], "N/A")
-    shop  = pick(o, ["shop","store","seller","gian_hang"], "N/A")
-    item  = pick(o, ["product_name","item_name","name","title","mat_hang"], "N/A")
-    qty   = pick(o, ["quantity","qty","so_luong","count"], 1)
-    price = pick(o, ["price","unit_price","gia"], None)
-    total = pick(o, ["total","grand_total","tong_tien","amount","price_total"], None)
-    st    = pick(o, ["status","state","trang_thai"], "N/A")
-
-    e = lambda x: html.escape(str(x)) if x is not None else ""
-    oid,date,buyer,shop,item,st = map(e, [oid,date,buyer,shop,item,st])
-
-    return (
-        "🛒 <b>ĐƠN MỚI</b>\n"
-        f"• Mã đơn: <b>{oid}</b>\n"
-        f"• Ngày bán: <b>{date}</b>\n"
-        f"• Người mua: <b>{buyer}</b>\n"
-        f"• Gian hàng: <b>{shop}</b>\n"
-        f"• Mặt hàng: <b>{item}</b>\n"
-        f"• Số lượng: <b>{qty}</b>  • Giá: <b>{fmt_vnd(price)}</b>  • Tổng: <b>{fmt_vnd(total)}</b>\n"
-        f"• Trạng thái: <b>{st}</b>"
-    )
-
+# ===== Utils =====
 def tg_send(text: str):
-    """Send message to Telegram chat via bot."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("[WARN] Missing TELEGRAM_* env")
         return
@@ -95,84 +50,248 @@ def tg_send(text: str):
     if r.status_code >= 400:
         print("Telegram error:", r.status_code, r.text)
 
-def uniq_id(o: Dict) -> str:
-    """Get stable id for an order to de-duplicate."""
-    oid = pick(o, ["order_id","id","code","order_code"])
-    if oid: return str(oid)
-    return hashlib.md5(json.dumps(o, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+def _labels_for_notify(parts_len: int) -> List[str]:
+    # Đặt nhãn thân thiện nếu độ dài 7 (thường gặp 0|0|0|0|0|1|0)
+    if parts_len == 7:
+        return ["c1","c2","c3","c4","c5","so_moi","c7"]
+    return [f"c{i+1}" for i in range(parts_len)]
 
-def extract_rows(resp_json: Any) -> List[Dict]:
-    """Normalize API responses to a list of dict rows."""
-    if isinstance(resp_json, list):
-        return [x for x in resp_json if isinstance(x, dict)]
-    if isinstance(resp_json, dict):
-        for key in ("data","items","rows","list","orders","result"):
-            v = resp_json.get(key)
-            if isinstance(v, list):
-                return [x for x in v if isinstance(x, dict)]
-    return []
+def parse_notify_text(text: str) -> Dict[str, Any]:
+    s = (text or "").strip()
+    parts = s.split("|") if s else []
+    if all(re.fullmatch(r"\d+", p or "") for p in parts):
+        nums = [int(p) for p in parts]
+        labels = _labels_for_notify(len(nums))
+        table = {labels[i]: nums[i] for i in range(len(nums))}
+        return {"raw": s, "numbers": nums, "table": table}
+    return {"raw": s}
 
+def parse_curl_command(curl_text: str) -> Dict[str, Any]:
+    """
+    Nhận 'Copy as cURL (bash)' từ Chrome DevTools.
+    Trả về: {"url","method","headers","body"}
+    """
+    args = shlex.split(curl_text)
+    method = "GET"
+    headers: Dict[str, str] = {}
+    data = None
+    url = ""
+
+    # Cho phép cURL dạng: curl 'https://...' -X POST -H 'k:v' --data '{...}'
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "curl":
+            i += 1
+            if i < len(args):
+                url = args[i]
+        elif a in ("-X", "--request"):
+            i += 1
+            if i < len(args):
+                method = args[i].upper()
+        elif a in ("-H", "--header"):
+            i += 1
+            if i < len(args):
+                h = args[i]
+                # Header có thể là "k: v" hoặc "k:    v"
+                if ":" in h:
+                    k, v = h.split(":", 1)
+                    headers[k.strip()] = v.strip()
+        elif a in ("--data", "--data-raw", "--data-binary", "-d"):
+            i += 1
+            if i < len(args):
+                data = args[i]
+        i += 1
+
+    # Nếu không có -X nhưng có --data thì mặc định POST
+    if method == "GET" and data is not None:
+        method = "POST"
+
+    return {"url": url, "method": method, "headers": headers, "body": data}
+
+# ====== Poller chính ======
 def poll_once():
-    """One polling cycle: call API, parse rows, send unseen orders to Telegram."""
+    """
+    Một vòng polling:
+    - Nếu response parse được JSON → (để tương lai dùng list-orders).
+    - Không phải JSON → coi là getNotify (text).
+    """
+    global LAST_NOTIFY, API_URL, API_METHOD, HEADERS, BODY_JSON_ENV
+
     if not API_URL:
+        print("No API_URL set")
         return
+
     try:
-        body = None
+        body_json = None
         if API_METHOD == "POST" and BODY_JSON_ENV:
             try:
-                body = json.loads(BODY_JSON_ENV)
+                body_json = json.loads(BODY_JSON_ENV)
             except Exception:
-                body = None
+                body_json = None
 
+        # Call
         if API_METHOD == "POST":
-            r = requests.post(API_URL, headers=HEADERS, json=body, verify=VERIFY_TLS, timeout=25)
+            r = requests.post(API_URL, headers=HEADERS, json=body_json, verify=VERIFY_TLS, timeout=25)
         else:
             r = requests.get(API_URL, headers=HEADERS, verify=VERIFY_TLS, timeout=25)
 
+        # 1) Thử JSON trước (để không phá nếu sau này bạn đổi sang API JSON)
         try:
             data = r.json()
         except Exception:
-            print("Non-JSON:", (r.text or "")[:200])
+            data = None
+
+        if data is not None:
+            rows: List[Dict[str, Any]] = []
+            if isinstance(data, list):
+                rows = [x for x in data if isinstance(x, dict)]
+            elif isinstance(data, dict):
+                for key in ("data","items","rows","list","orders","result","content"):
+                    v = data.get(key)
+                    if isinstance(v, list):
+                        rows = [x for x in v if isinstance(x, dict)]
+                        break
+                if not rows:
+                    for v in data.values():
+                        if isinstance(v, dict):
+                            for key in ("data","items","rows","list","orders","result","content"):
+                                vv = v.get(key)
+                                if isinstance(vv, list):
+                                    rows = [x for x in vv if isinstance(x, dict)]
+                                    break
+                        if rows:
+                            break
+
+            if rows:
+                sent = 0
+                for o in rows:
+                    uid = str(o.get("order_id") or o.get("id") or hashlib.md5(json.dumps(o, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest())
+                    if uid in SEEN_JSON_IDS:
+                        continue
+                    SEEN_JSON_IDS.add(uid)
+                    buyer = html.escape(str(o.get("buyer_name") or o.get("buyer") or o.get("customer") or "N/A"))
+                    total = o.get("total") or o.get("grand_total") or o.get("price_total")
+                    msg = f"🛒 <b>ĐƠN MỚI</b>\n• Mã: <b>{html.escape(uid)}</b>\n• Người mua: <b>{buyer}</b>\n• Tổng: <b>{total}</b>"
+                    tg_send(msg)
+                    sent += 1
+                if sent:
+                    print(f"Sent {sent} order(s) from JSON API.")
+                return  # đã xong JSON
+
+        # 2) Không phải JSON → coi là getNotify (text)
+        text = (r.text or "").strip()
+        if not text:
+            print("getNotify: empty response")
             return
 
-        rows = extract_rows(data)
-        if not rows:
-            print("No rows parsed.")
-            return
+        if text != LAST_NOTIFY:
+            LAST_NOTIFY = text
+            parsed = parse_notify_text(text)
+            if "numbers" in parsed:
+                tbl = parsed["table"]
+                lines = [f"{k}: <b>{v}</b>" for k, v in tbl.items()]
+                detail = "\n".join(lines)
+                msg = f"🔔 <b>TapHoa getNotify thay đổi</b>\n{detail}\n(raw: <code>{html.escape(text)}</code>)"
+            else:
+                msg = f"🔔 <b>TapHoa getNotify thay đổi</b>\n<code>{html.escape(text)}</code>"
+            tg_send(msg)
+            print("getNotify changed -> Telegram sent.")
+        else:
+            print("getNotify unchanged.")
 
-        for o in rows:
-            uid = uniq_id(o)
-            if uid in SEEN:
-                continue
-            SEEN.add(uid)
-            # trim memory
-            if len(SEEN) > SEEN_MAX:
-                SEEN.pop()
-            tg_send(order_to_msg(o))
     except Exception as e:
         print("poll_once error:", e)
 
 def poller_loop():
-    print("▶ poller started")
+    print("▶ poller started (getNotify compatible)")
     poll_once()
     while True:
         time.sleep(POLL_INTERVAL)
         poll_once()
 
+# ====== API ======
 @app.get("/healthz")
 def health():
-    return {"ok": True, "seen": len(SEEN), "poller": not DISABLE_POLLER}
+    return {
+        "ok": True,
+        "poller": not DISABLE_POLLER,
+        "seen_json": len(SEEN_JSON_IDS),
+        "last_notify": LAST_NOTIFY,
+        "api": {"url": API_URL, "method": API_METHOD}
+    }
+
+@app.get("/debug/notify-now")
+def debug_notify(secret: str):
+    if secret != WEBHOOK_SECRET:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    before = LAST_NOTIFY
+    poll_once()
+    after = LAST_NOTIFY
+    return {"ok": True, "last_before": before, "last_after": after}
+
+@app.post("/debug/parse-curl")
+async def debug_parse_curl(req: Request, secret: str):
+    if secret != WEBHOOK_SECRET:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    body = await req.json()
+    curl_txt = str(body.get("curl") or "")
+    parsed = parse_curl_command(curl_txt)
+    # Trả về để bạn copy vào env
+    return {
+        "ok": True,
+        "parsed": parsed,
+        "env_suggestion": {
+            "TAPHOA_API_ORDERS_URL": parsed["url"],
+            "TAPHOA_METHOD": parsed["method"],
+            "HEADERS_JSON": parsed["headers"],
+            "TAPHOA_BODY_JSON": parsed["body"] or ""
+        }
+    }
+
+@app.post("/debug/set-curl")
+async def debug_set_curl(req: Request, secret: str):
+    """
+    Apply cURL tạm thời trong process (không ghi file), rồi poll ngay 1 vòng.
+    Dùng để test nhanh trên Render.
+    """
+    if secret != WEBHOOK_SECRET:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    body = await req.json()
+    curl_txt = str(body.get("curl") or "")
+    parsed = parse_curl_command(curl_txt)
+
+    global API_URL, API_METHOD, HEADERS, BODY_JSON_ENV
+    API_URL = parsed["url"]
+    API_METHOD = parsed["method"]
+    HEADERS = parsed["headers"]
+    BODY_JSON_ENV = parsed["body"] or ""
+
+    poll_once()
+    return {
+        "ok": True,
+        "using": {
+            "url": API_URL,
+            "method": API_METHOD,
+            "headers": HEADERS,
+            "body": BODY_JSON_ENV
+        },
+        "note": "Applied for this process only. Update env on Render to persist."
+    }
 
 @app.post("/taphoammo")
 async def taphoammo(request: Request):
-    """Webhook endpoint: POST JSON order with header X-Auth-Secret."""
+    """Giữ webhook để bạn test thủ công nếu cần (không bắt buộc dùng)."""
     if request.headers.get("X-Auth-Secret") != WEBHOOK_SECRET:
         raise HTTPException(status_code=401, detail="unauthorized")
     try:
         data = await request.json()
     except Exception as ex:
         return JSONResponse({"ok": False, "error": f"bad json: {ex}"}, status_code=400)
-    tg_send(order_to_msg(data))
+    buyer = html.escape(str(data.get("buyer_name") or data.get("buyer") or "N/A"))
+    total = data.get("total") or data.get("grand_total")
+    msg = f"🛒 <b>ĐƠN MỚI (webhook)</b>\n• Người mua: <b>{buyer}</b>\n• Tổng: <b>{total}</b>"
+    tg_send(msg)
     return {"ok": True}
 
 def _maybe_start():
