@@ -223,6 +223,16 @@ def poll_once():
         if text != LAST_NOTIFY:
             LAST_NOTIFY = text
             parsed = parse_notify_text(text)
+            
+            # ----- [CẬP NHẬT] BỘ LỌC TẤT CẢ SỐ BẰNG 0 -----
+            if "numbers" in parsed:
+                nums = parsed["numbers"]
+                # Kiểm tra xem TẤT CẢ các số có bằng 0 không
+                if nums and all(n == 0 for n in nums):
+                    print(f"getNotify changed, but skipping (all numbers are 0). Raw: {text}")
+                    return  # Dừng lại, không gửi thông báo
+            # ----- [CẬP NHẬT] KẾT THÚC BỘ LỌC -----
+
             if "numbers" in parsed:
                 tbl = parsed["table"]
                 lines = [f"{k}: <b>{v}</b>" for k, v in tbl.items()]
