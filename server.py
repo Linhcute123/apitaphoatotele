@@ -1,7 +1,8 @@
 import os, json, time, threading, html, hashlib, requests, re, shlex
 from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse
+# Thêm HTMLResponse để trả về giao diện web
+from fastapi.responses import JSONResponse, HTMLResponse
 
 # ----- .env (local); trên Render sẽ dùng Environment Variables -----
 try:
@@ -232,6 +233,7 @@ def poll_once():
             tg_send(msg)
             print("getNotify changed -> Telegram sent.")
         else:
+            # Đây là logic bạn muốn: không thay đổi thì không gửi
             print("getNotify unchanged.")
 
     except Exception as e:
@@ -245,6 +247,102 @@ def poller_loop():
         poll_once()
 
 # =================== API endpoints ===================
+
+@app.get("/", response_class=HTMLResponse)
+async def get_curl_ui():
+    """
+    Trả về giao diện HTML đơn giản để dán cURL.
+    Form này sẽ gọi API /debug/set-curl
+    """
+    html_content = """
+    <!DOCTYPE html>
+    <html lang="vi">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Cập nhật cURL Poller</title>
+        <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; margin: 0; padding: 2rem; background-color: #f4f7f6; }
+            .container { max-width: 800px; margin: 0 auto; background: #fff; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+            h1 { color: #333; }
+            textarea { width: 98%; height: 250px; padding: 10px; border: 1px solid #ccc; border-radius: 4px; font-family: monospace; font-size: 14px; margin-top: 0.5rem; }
+            label { display: block; margin-top: 1rem; margin-bottom: 0.5rem; font-weight: 600; }
+            input[type="password"] { width: 98%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; margin-top: 0.5rem;}
+            button { background-color: #007bff; color: white; padding: 12px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; margin-top: 1.5rem; }
+            button:hover { background-color: #0056b3; }
+            #status { margin-top: 1.5rem; padding: 10px; border-radius: 4px; font-weight: 600; display: none; }
+            .success { display: block; background-color: #e0ffe0; border: 1px solid #00c000; color: #006000; }
+            .error { display: block; background-color: #ffe0e0; border: 1px solid #c00000; color: #600000; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>Cập nhật Poller bằng cURL (bash)</h1>
+            <p>Dán nội dung 'Copy as cURL (bash)' từ DevTools (F12) vào đây.</p>
+            
+            <form id="curl-form">
+                <label for="curl_text">Lệnh cURL (bash):</label>
+                <textarea id="curl_text" name="curl" placeholder="curl 'https://taphoammo.net/api/getNotify' ..." required></textarea>
+                
+                <label for="secret_key">Secret Key:</label>
+                <input type="password" id="secret_key" name="secret" placeholder="Nhập WEBHOOK_SECRET của bạn" required>
+                
+                <button type="submit">Cập nhật và Chạy Thử</button>
+            </form>
+            
+            <p id="status"></p>
+        </div>
+        
+        <script>
+            document.getElementById("curl-form").addEventListener("submit", async function(e) {
+                e.preventDefault();
+                
+                const curlText = document.getElementById("curl_text").value;
+                const secret = document.getElementById("secret_key").value;
+                const statusEl = document.getElementById("status");
+                
+                statusEl.textContent = "Đang xử lý...";
+                statusEl.className = "";
+                
+                if (!curlText || !secret) {
+                    statusEl.textContent = "Vui lòng nhập cả cURL và Secret Key.";
+                    statusEl.className = "error";
+                    return;
+                }
+                
+                try {
+                    const response = await fetch(`/debug/set-curl?secret=${encodeURIComponent(secret)}`, {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json"
+                        },
+                        body: JSON.stringify({
+                            curl: curlText
+                        })
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (response.ok) {
+                        statusEl.textContent = "Cập nhật thành công! Đã chạy thử 1 lần. Poller sẽ dùng cấu hình mới này.";
+                        statusEl.className = "success";
+                        console.log("Applied:", result.using);
+                    } else {
+                        statusEl.textContent = `Lỗi: ${result.detail || 'Lỗi không xác định.'}`;
+                        statusEl.className = "error";
+                    }
+                } catch (err) {
+                    statusEl.textContent = `Lỗi kết nối: ${err.message}`;
+                    statusEl.className = "error";
+                }
+            });
+        </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
+
+
 @app.get("/healthz")
 def health():
     return {
