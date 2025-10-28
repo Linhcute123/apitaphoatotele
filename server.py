@@ -31,10 +31,11 @@ except Exception:
     HEADERS = {}
 
 # =================== APP ===================
-app = FastAPI(title="TapHoa → Telegram (getNotify + cURL parser)")
+app = FastAPI(title="TapHoa → Telegram (Poller only)")
 
 SEEN_JSON_IDS: set[str] = set()      # nếu sau này xài JSON list-orders
-LAST_NOTIFY: Optional[str] = None    # lần cuối getNotify (text)
+# [ĐÃ SỬA] Lưu lại các SỐ lần cuối (thay cho LAST_NOTIFY)
+LAST_NOTIFY_NUMS: List[int] = []     
 
 # =================== Telegram ===================
 def tg_send(text: str):
@@ -60,9 +61,27 @@ def tg_send(text: str):
 
 # =================== Helpers ===================
 def _labels_for_notify(parts_len: int) -> List[str]:
-    # hay gặp 7 cột: gắn nhãn c6 là "so_moi" cho dễ nhìn
-    if parts_len == 7:
-        return ["c1","c2","c3","c4","c5","so_moi","c7"]
+    # [ĐÃ SỬA THEO YÊU CẦU CỦA BẠN]
+    # Gán tên cho 8 cột
+    if parts_len == 8:
+        # c1 là đơn hàng sản phẩm
+        # c2 là đánh giá
+        # c5 là đặt trước
+        # c6 là đơn hàng dịch vụ
+        # c8 là tin nhắn
+        # c7 mình đoán là "Khiếu nại" từ ảnh cũ
+        return [
+            "Đơn hàng sản phẩm",  # c1
+            "Đánh giá",          # c2
+            "Chưa rõ 3",         # c3 (Bạn tự đổi tên nếu biết)
+            "Chưa rõ 4",         # c4 (Bạn tự đổi tên nếu biết)
+            "Đặt trước",          # c5
+            "Đơn hàng dịch vụ",   # c6
+            "Khiếu nại",         # c7 (Bạn tự đổi tên nếu biết)
+            "Tin nhắn"            # c8
+        ]
+    
+    # Fallback cho trường hợp API trả về số lượng cột khác
     return [f"c{i+1}" for i in range(parts_len)]
 
 def parse_notify_text(text: str) -> Dict[str, Any]:
@@ -147,13 +166,16 @@ def parse_curl_command(curl_text: str) -> Dict[str, Any]:
 
 
 # =================== Poller ===================
+
+# [HÀM poll_once ĐÃ ĐƯỢC VIẾT LẠI HOÀN TOÀN]
 def poll_once():
     """
-    - Nếu response parse được JSON → gửi đủ thông tin đơn (tương lai).
-    - Nếu không phải JSON → coi là getNotify (text).
-    - Nhận diện HTML (Cloudflare/đăng nhập) → gửi cảnh báo + preview.
+    - [ĐÃ SỬA] Chỉ check getNotify (text) và xử lý JSON (nếu có).
+    - [ĐÃ SỬA] Logic chỉ thông báo khi SỐ TĂNG LÊN (0->1, 1->2).
+    - [ĐÃ SỬA] Bỏ qua thông báo khi SỐ GIẢM (1->0).
+    - [ĐÃ SỬA] Gộp icon, sắp xếp thứ tự ưu tiên.
     """
-    global LAST_NOTIFY, API_URL, API_METHOD, HEADERS, BODY_JSON_ENV
+    global LAST_NOTIFY_NUMS, API_URL, API_METHOD, HEADERS, BODY_JSON_ENV
 
     if not API_URL:
         print("No API_URL set")
@@ -173,13 +195,14 @@ def poll_once():
         else:
             r = requests.get(API_URL, headers=HEADERS, verify=VERIFY_TLS, timeout=25)
 
-        # 1) thử JSON trước (để tương lai bạn đổi sang API list-orders)
+        # 1) thử JSON trước (API list-orders)
         try:
             data = r.json()
         except Exception:
             data = None
 
         if data is not None:
+            # (Phần xử lý JSON API này giữ nguyên, nó dành cho API list-orders)
             rows: List[Dict[str, Any]] = []
             if isinstance(data, list):
                 rows = [x for x in data if isinstance(x, dict)]
@@ -237,7 +260,9 @@ def poll_once():
                 f"Độ dài: {len(text)} ký tự. Preview:\n<code>{preview}</code>\n"
                 "→ Cập nhật HEADERS_JSON bằng 'Copy as cURL (bash)': cookie, x-csrf-token, user-agent, referer, x-requested-with…"
             )
-            tg_send(msg)
+            # Chỉ gửi cảnh báo HTML nếu nó khác với lần trước
+            if text != str(LAST_NOTIFY_NUMS): # check tạm
+                tg_send(msg)
             print("HTML detected, preview sent. Probably headers/cookie expired.")
             return
 
@@ -250,33 +275,96 @@ def poll_once():
             )
             tg_send(msg)
             return
-
-        # So sánh với lần trước
-        if text != LAST_NOTIFY:
-            LAST_NOTIFY = text
-            parsed = parse_notify_text(text)
+        
+        # ----- [BẮT ĐẦU LOGIC MỚI CỦA BẠN] -----
+        parsed = parse_notify_text(text)
+        
+        if "numbers" in parsed:
+            current_nums = parsed["numbers"]
             
-            # ----- BỘ LỌC TẤT CẢ SỐ BẰNG 0 -----
-            if "numbers" in parsed:
-                nums = parsed["numbers"]
-                # Kiểm tra xem TẤT CẢ các số có bằng 0 không
-                if nums and all(n == 0 for n in nums):
-                    print(f"getNotify changed, but skipping (all numbers are 0). Raw: {text}")
-                    return  # Dừng lại, không gửi thông báo
-            # ----- KẾT THÚC BỘ LỌC -----
+            # Nếu số cột thay đổi, reset và coi như lần đầu
+            if len(current_nums) != len(LAST_NOTIFY_NUMS):
+                LAST_NOTIFY_NUMS = [0] * len(current_nums)
 
-            if "numbers" in parsed:
-                tbl = parsed["table"]
-                lines = [f"{k}: <b>{v}</b>" for k, v in tbl.items()]
-                detail = "\n".join(lines)
-                msg = f"🔔 <b>TapHoa getNotify thay đổi</b>\n{detail}\n(raw: <code>{html.escape(text)}</code>)"
+            # Hàm tạo icon (đã thêm Tin nhắn)
+            def get_icon_for_label(label: str) -> str:
+                low_label = label.lower()
+                if "sản phẩm" in low_label: return "📦"
+                if "dịch vụ" in low_label: return "🛎️"
+                if "khiếu nại" in low_label: return "⚠️"
+                if "đặt trước" in low_label: return "⏰"
+                if "reseller" in low_label: return "👥"
+                if "đánh giá" in low_label: return "💬"
+                if "tin nhắn" in low_label: return "✉️"
+                return "•" # Mặc định
+
+            labels = _labels_for_notify(len(current_nums))
+            results = {} # Dùng dict để lưu kết quả
+            has_new_notification = False
+
+            # 1. So sánh giá trị MỚI và CŨ
+            for i in range(len(current_nums)):
+                current_val = current_nums[i]
+                last_val = LAST_NOTIFY_NUMS[i]
+                
+                # [YÊU CẦU CHÍNH] Chỉ kích hoạt khi SỐ TĂNG LÊN
+                if current_val > last_val:
+                    has_new_notification = True
+                
+                # Chỉ lưu lại các mục có số > 0 để hiển thị
+                if current_val > 0:
+                    label = labels[i]
+                    icon = get_icon_for_label(label)
+                    results[label] = f"{icon} <b>{label}</b>: <b>{current_val}</b>"
+
+            # 2. Gửi thông báo NẾU CÓ ÍT NHẤT 1 MỤC TĂNG
+            if has_new_notification:
+                # [SẮP XẾP THỨ TỰ]
+                # Đây là thứ tự ưu tiên bạn yêu cầu (C1, C6, C5, C7, C8)
+                # Mình thêm C2 (Đánh giá) vào cuối
+                ordered_labels = [
+                    "Đơn hàng sản phẩm",  # c1
+                    "Đơn hàng dịch vụ",   # c6
+                    "Đặt trước",          # c5
+                    "Khiếu nại",         # c7 (mình đoán)
+                    "Tin nhắn",            # c8
+                    "Đánh giá"            # c2
+                ]
+                
+                lines = []
+                # Thêm các mục theo thứ tự ưu tiên
+                for label in ordered_labels:
+                    if label in results:
+                        lines.append(results.pop(label)) # Thêm và xóa khỏi dict
+                
+                # Thêm các mục còn lại (không có trong thứ tự ưu tiên, vd: c3, c4)
+                for remaining_line in results.values():
+                    lines.append(remaining_line)
+                
+                # Chỉ gửi nếu có nội dung
+                if lines:
+                    detail = "\n".join(lines)
+                    # [SỬA] Tiêu đề thông báo rõ ràng hơn
+                    msg = f"🔔 <b>TapHoa có thông báo mới</b>\n{detail}"
+                    tg_send(msg)
+                    print("getNotify changes (INCREASE) -> Telegram sent.")
+                else:
+                    # Trường hợp này GẦN NHƯ không xảy ra
+                    # (vd: 0|0 -> 0|1 nhưng 1|0 -> 0|0)
+                    print("getNotify changes (INCREASE but all 0) -> Skipping.")
             else:
-                msg = f"🔔 <b>TapHoa getNotify thay đổi</b>\n<code>{html.escape(text)}</code>"
-            tg_send(msg)
-            print("getNotify changed -> Telegram sent.")
+                print("getNotify unchanged or DECREASED -> Skipping.")
+
+            # 3. Cập nhật trạng thái CŨ = MỚI để check lần sau
+            LAST_NOTIFY_NUMS = current_nums
+        
         else:
-            # Đây là logic bạn muốn: không thay đổi thì không gửi
-            print("getNotify unchanged.")
+            # Xử lý trường hợp getNotify trả về text lạ (không phải số)
+            if text != str(LAST_NOTIFY_NUMS): # So sánh tạm
+                msg = f"🔔 <b>TapHoa getNotify thay đổi</b>\n<code>{html.escape(text)}</code>"
+                tg_send(msg)
+                print("getNotify (non-numeric) changed -> Telegram sent.")
+        # ----- [KẾT THÚC LOGIC MỚI] -----
 
     except Exception as e:
         print("poll_once error:", e)
@@ -391,7 +479,7 @@ def health():
         "ok": True,
         "poller": not DISABLE_POLLER,
         "seen_json": len(SEEN_JSON_IDS),
-        "last_notify": LAST_NOTIFY,
+        "last_notify_nums": LAST_NOTIFY_NUMS, # [ĐÃ SỬA]
         "api": {"url": API_URL, "method": API_METHOD}
     }
 
@@ -399,9 +487,9 @@ def health():
 def debug_notify(secret: str):
     if secret != WEBHOOK_SECRET:
         raise HTTPException(status_code=401, detail="unauthorized")
-    before = LAST_NOTIFY
+    before = str(LAST_NOTIFY_NUMS) # [ĐÃ SỬA]
     poll_once()
-    after = LAST_NOTIFY
+    after = str(LAST_NOTIFY_NUMS) # [ĐÃ SỬA]
     return {"ok": True, "last_before": before, "last_after": after}
 
 @app.post("/debug/parse-curl")
@@ -451,20 +539,7 @@ async def debug_set_curl(req: Request, secret: str):
         "note": "Applied for current process only. Update Render Environment to persist."
     }
 
-@app.post("/taphoammo")
-async def taphoammo(request: Request):
-    """Webhook dự phòng (không bắt buộc dùng)."""
-    if request.headers.get("X-Auth-Secret") != WEBHOOK_SECRET:
-        raise HTTPException(status_code=401, detail="unauthorized")
-    try:
-        data = await request.json()
-    except Exception as ex:
-        return JSONResponse({"ok": False, "error": f"bad json: {ex}"}, status_code=400)
-    buyer = html.escape(str(data.get("buyer_name") or data.get("buyer") or "N/A"))
-    total = data.get("total") or data.get("grand_total")
-    msg = f"🛒 <b>ĐƠN MỚI (webhook)</b>\n• Người mua: <b>{buyer}</b>\n• Tổng: <b>{total}</b>"
-    tg_send(msg)
-    return {"ok": True}
+# [ĐÃ XÓA] Đã xóa endpoint /taphoammo (webhook) theo yêu cầu
 
 # =================== START ===================
 def _maybe_start():
