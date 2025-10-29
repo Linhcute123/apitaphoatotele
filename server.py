@@ -17,7 +17,6 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
 WEBHOOK_SECRET     = os.getenv("WEBHOOK_SECRET", "change-me-please")
 
-# [THAY ĐỔI] Hỗ trợ 2 bộ cấu hình API
 # 1. API Thông báo (getNotify)
 NOTIFY_API_URL       = os.getenv("NOTIFY_API_URL", "")
 NOTIFY_API_METHOD    = os.getenv("NOTIFY_API_METHOD", "POST").upper()
@@ -34,7 +33,6 @@ POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "12"))
 VERIFY_TLS    = bool(int(os.getenv("VERIFY_TLS", "1")))
 DISABLE_POLLER = os.getenv("DISABLE_POLLER", "0") == "1"
 
-# [THAY ĐỔI] Cấu hình runtime (sẽ bị ghi đè bởi UI)
 try:
     NOTIFY_CONFIG = {
         "url": NOTIFY_API_URL, "method": NOTIFY_API_METHOD,
@@ -60,7 +58,6 @@ app = FastAPI(title="TapHoa → Telegram (Dual-API Poller)")
 LAST_NOTIFY_NUMS: List[int] = []     
 DAILY_ORDER_COUNT = defaultdict(int) 
 DAILY_COUNTER_DATE = "" 
-# [THÊM MỚI] ID các tin nhắn đã xem (dùng trường 'date')
 SEEN_CHAT_DATES: set[str] = set()
 
 # =================== Telegram ===================
@@ -163,12 +160,9 @@ def fetch_chats() -> List[Dict[str, str]]:
         new_messages = []
         current_chat_dates = set()
         
-        # `data` là 1 list, vd: [{"guest_user": "...", "last_chat": "...", "date": "..."}]
         for chat in data:
             if not isinstance(chat, dict): continue
             
-            # Dùng 'date' làm ID duy nhất (vd: "2025-10-29T03:09:58.000+00:00")
-            # Hoặc fallback về hash(user+chat) nếu không có
             chat_id = chat.get("date")
             if not chat_id:
                 user = chat.get("guest_user", "")
@@ -177,8 +171,7 @@ def fetch_chats() -> List[Dict[str, str]]:
 
             current_chat_dates.add(chat_id)
 
-            # Nếu ID này chưa thấy, và có 'newMes: 1' (hoặc cứ lấy)
-            # Dựa trên ảnh, 'newMes: 0' vẫn là tin mới.
+            # [LOGIC FIX] Chỉ thêm nếu ID chưa từng thấy
             if chat_id not in SEEN_CHAT_DATES:
                 SEEN_CHAT_DATES.add(chat_id)
                 new_messages.append({
@@ -186,7 +179,7 @@ def fetch_chats() -> List[Dict[str, str]]:
                     "chat": chat.get("last_chat", "[không có nội dung]")
                 })
         
-        # Dọn dẹp: Xóa các ID đã cũ (phòng trường hợp list chat rút gọn)
+        # Dọn dẹp: Xóa các ID đã cũ
         SEEN_CHAT_DATES.intersection_update(current_chat_dates)
         
         if new_messages:
@@ -236,8 +229,9 @@ def poll_once():
         parsed = parse_notify_text(text)
         
         if "numbers" in parsed:
+            # [SỬA] Đổi định dạng ngày giờ
             now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=7)))
-            today_str = now.strftime("%Y-%m-%d")
+            today_str = now.strftime("%d-%m-%Y") # Đổi Y-m-d -> d-m-Y
             time_str = now.strftime("%H:%M:%S")
 
             if today_str != DAILY_COUNTER_DATE:
@@ -262,7 +256,7 @@ def poll_once():
             labels = _labels_for_notify(len(current_nums))
             instant_alerts_map = {}
             has_new_notification = False
-            has_new_chat = False # [THÊM MỚI]
+            has_new_chat = False
 
             # 3. SO SÁNH GIÁ TRỊ MỚI VÀ CŨ
             for i in range(len(current_nums)):
@@ -278,7 +272,6 @@ def poll_once():
                     elif "đơn hàng dịch vụ" in label.lower():
                         DAILY_ORDER_COUNT[label] += (current_val - last_val)
                     
-                    # [THÊM MỚI] Phát hiện có tin nhắn mới
                     if "tin nhắn" in label.lower():
                         has_new_chat = True
                 
@@ -294,7 +287,6 @@ def poll_once():
                 for chat in fetched_messages:
                     user = html.escape(chat.get("user", "N/A"))
                     msg = html.escape(chat.get("chat", "..."))
-                    # Thêm định dạng "siêu chuyên nghiệp"
                     new_chat_messages.append(f"    ✉️ <b>{user}</b>: <i>{msg}</i>")
 
             # 5. GỬI THÔNG BÁO TỔNG HỢP
@@ -323,13 +315,13 @@ def poll_once():
                     summary_lines.append(f"    🛎️ Đơn hàng dịch vụ: <b>{service_total}</b>")
                     total_today += service_total
 
-                # Lắp ráp thông báo "siêu chuyên nghiệp"
                 msg_lines = []
-                msg_lines.append(f"<b>📊 BÁO CÁO NHANH TỪ TAPHOA</b>")
+                # [SỬA] Đổi tiêu đề
+                msg_lines.append(f"<b>📊 BÁO CÁO NHANH TỪ TAPHOAMMO</b>") 
+                # [SỬA] Đổi định dạng ngày
                 msg_lines.append(f"<i>Thời gian: {time_str} - Ngày: {today_str} (GMT+7)</i>")
                 msg_lines.append("====================")
 
-                # [THÊM MỚI] Đặt tin nhắn lên đầu
                 if new_chat_messages:
                     msg_lines.append("<b>💬 TIN NHẮN MỚI:</b>")
                     msg_lines.extend(new_chat_messages)
@@ -362,9 +354,7 @@ def poll_once():
 
 def poller_loop():
     print("▶ Poller started (Dual-API Mode)")
-    # Chạy lần đầu để khởi tạo SEEN_CHAT_DATES
-    print("Running initial chat fetch to set baseline...")
-    fetch_chats()
+    # [FIX] Bỏ 2 dòng fetch_chats() và print ở đây để fix lỗi
     print("Running initial notify poll...")
     poll_once()
     
@@ -374,7 +364,6 @@ def poller_loop():
 
 # =================== API endpoints ===================
 
-# [VIẾT LẠI] Giao diện web hỗ trợ 2 ô cURL
 @app.get("/", response_class=HTMLResponse)
 async def get_curl_ui():
     """
@@ -592,7 +581,6 @@ def debug_notify(secret: str):
         "daily_stats": DAILY_ORDER_COUNT
     }
 
-# [VIẾT LẠI] Endpoint cập nhật 2 cURL
 @app.post("/debug/set-curl")
 async def debug_set_curl(req: Request, secret: str):
     if secret != WEBHOOK_SECRET:
@@ -608,14 +596,12 @@ async def debug_set_curl(req: Request, secret: str):
     parsed_notify = parse_curl_command(curl_notify_txt)
     parsed_chat = parse_curl_command(curl_chat_txt)
 
-    # Ghi đè cấu hình runtime toàn cục
     global NOTIFY_CONFIG, CHAT_CONFIG
     global LAST_NOTIFY_NUMS, DAILY_ORDER_COUNT, DAILY_COUNTER_DATE, SEEN_CHAT_DATES
     
     NOTIFY_CONFIG = parsed_notify
     CHAT_CONFIG = parsed_chat
 
-    # Reset lại toàn bộ
     LAST_NOTIFY_NUMS = []
     DAILY_ORDER_COUNT.clear()
     DAILY_COUNTER_DATE = "" 
@@ -625,7 +611,6 @@ async def debug_set_curl(req: Request, secret: str):
     print(f"Notify API set to: {NOTIFY_CONFIG.get('url')}")
     print(f"Chat API set to: {CHAT_CONFIG.get('url')}")
     
-    # Chạy thử 1 lần (sẽ chạy cả 2 API nếu cần)
     poll_once()
     
     return {
