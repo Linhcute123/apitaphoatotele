@@ -1,7 +1,7 @@
 import os, json, time, threading, html, hashlib, requests, re, shlex
 from typing import Any, Dict, List, Optional
-# [THÊM MỚI] Import defaultdict cho baseline
 from collections import defaultdict
+import datetime # Để lấy ngày/giờ
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, HTMLResponse
 
@@ -17,43 +17,64 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
 WEBHOOK_SECRET     = os.getenv("WEBHOOK_SECRET", "change-me-please")
 
-# API có thể là getNotify (text) hoặc list-orders (JSON)
-API_URL       = os.getenv("TAPHOA_API_ORDERS_URL", "")
-API_METHOD    = os.getenv("TAPHOA_METHOD", "POST").upper()
-HEADERS_ENV   = os.getenv("HEADERS_JSON") or "{}"
-BODY_JSON_ENV = os.getenv("TAPHOA_BODY_JSON", "")
+# [THAY ĐỔI] Hỗ trợ 2 bộ cấu hình API
+# 1. API Thông báo (getNotify)
+NOTIFY_API_URL       = os.getenv("NOTIFY_API_URL", "")
+NOTIFY_API_METHOD    = os.getenv("NOTIFY_API_METHOD", "POST").upper()
+NOTIFY_HEADERS_ENV   = os.getenv("NOTIFY_HEADERS_JSON") or "{}"
+NOTIFY_BODY_JSON_ENV = os.getenv("NOTIFY_BODY_JSON", "")
+
+# 2. API Tin nhắn (getNewConversion)
+CHAT_API_URL       = os.getenv("CHAT_API_URL", "")
+CHAT_API_METHOD    = os.getenv("CHAT_API_METHOD", "POST").upper()
+CHAT_HEADERS_ENV   = os.getenv("CHAT_HEADERS_JSON") or "{}"
+CHAT_BODY_JSON_ENV = os.getenv("CHAT_BODY_JSON", "")
+
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "12"))
 VERIFY_TLS    = bool(int(os.getenv("VERIFY_TLS", "1")))
 DISABLE_POLLER = os.getenv("DISABLE_POLLER", "0") == "1"
 
+# [THAY ĐỔI] Cấu hình runtime (sẽ bị ghi đè bởi UI)
 try:
-    HEADERS: Dict[str, str] = json.loads(HEADERS_ENV)
+    NOTIFY_CONFIG = {
+        "url": NOTIFY_API_URL, "method": NOTIFY_API_METHOD,
+        "headers": json.loads(NOTIFY_HEADERS_ENV),
+        "body_json": json.loads(NOTIFY_BODY_JSON_ENV) if NOTIFY_BODY_JSON_ENV else None
+    }
 except Exception:
-    HEADERS = {}
+    NOTIFY_CONFIG = {"url": "", "method": "GET", "headers": {}, "body_json": None}
+
+try:
+    CHAT_CONFIG = {
+        "url": CHAT_API_URL, "method": CHAT_API_METHOD,
+        "headers": json.loads(CHAT_HEADERS_ENV),
+        "body_json": json.loads(CHAT_BODY_JSON_ENV) if CHAT_BODY_JSON_ENV else None
+    }
+except Exception:
+    CHAT_CONFIG = {"url": "", "method": "GET", "headers": {}, "body_json": None}
+
 
 # =================== APP ===================
-app = FastAPI(title="TapHoa → Telegram (Poller only)")
+app = FastAPI(title="TapHoa → Telegram (Dual-API Poller)")
 
-SEEN_JSON_IDS: set[str] = set()      # nếu sau này xài JSON list-orders
-# [ĐÃ SỬA] Lưu lại các SỐ lần cuối
 LAST_NOTIFY_NUMS: List[int] = []     
+DAILY_ORDER_COUNT = defaultdict(int) 
+DAILY_COUNTER_DATE = "" 
+# [THÊM MỚI] ID các tin nhắn đã xem (dùng trường 'date')
+SEEN_CHAT_DATES: set[str] = set()
 
 # =================== Telegram ===================
 def tg_send(text: str):
-    """Gửi an toàn (chặn lỗi 400: text is too long)."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("[WARN] Missing TELEGRAM_* env")
         return
-
-    MAX = 3900  # chừa biên cho parse_mode=HTML
+    MAX = 3900  
     chunks = [text[i:i+MAX] for i in range(0, len(text), MAX)] or [""]
-
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    for idx, part in enumerate(chunks[:3]):  # tối đa 3 message/1 lần
+    for idx, part in enumerate(chunks[:3]):
         r = requests.post(url, json={
             "chat_id": TELEGRAM_CHAT_ID,
-            "text": part,
-            "parse_mode": "HTML",
+            "text": part, "parse_mode": "HTML",
             "disable_web_page_preview": True
         }, timeout=20)
         if r.status_code >= 400:
@@ -62,35 +83,15 @@ def tg_send(text: str):
 
 # =================== Helpers ===================
 def _labels_for_notify(parts_len: int) -> List[str]:
-    # [ĐÃ SỬA THEO YÊU CẦU CỦA BẠN]
-    # Gán tên cho 8 cột
     if parts_len == 8:
-        # c1 là đơn hàng sản phẩm
-        # c2 là đánh giá
-        # c5 là đặt trước
-        # c6 là đơn hàng dịch vụ
-        # c8 là tin nhắn
-        # c7 là "Khiếu nại"
         return [
-            "Đơn hàng sản phẩm",  # c1
-            "Đánh giá",          # c2
-            "Chưa rõ 3",         # c3
-            "Chưa rõ 4",         # c4
-            "Đặt trước",          # c5
-            "Đơn hàng dịch vụ",   # c6
-            "Khiếu nại",         # c7
-            "Tin nhắn"            # c8
+            "Đơn hàng sản phẩm", "Đánh giá", "Chưa rõ 3", "Chưa rõ 4",
+            "Đặt trước", "Đơn hàng dịch vụ", "Khiếu nại", "Tin nhắn"
         ]
-    
     return [f"c{i+1}" for i in range(parts_len)]
 
-# ----- [THÊM MỚI] MỐC CƠ BẢN (BASELINE) -----
-# Chỉ hiển thị các mục nếu giá trị của chúng LỚN HƠN mốc cơ bản.
-# Mặc định là 0, "Khiếu nại" là 1 (hoặc 4, tùy bạn).
 COLUMN_BASELINES = defaultdict(int)
 COLUMN_BASELINES["Khiếu nại"] = 1
-# ----------------------------------------------
-
 
 def parse_notify_text(text: str) -> Dict[str, Any]:
     s = (text or "").strip()
@@ -102,282 +103,282 @@ def parse_notify_text(text: str) -> Dict[str, Any]:
         return {"raw": s, "numbers": nums, "table": table}
     return {"raw": s}
 
-# ----- [TOOL CHỈNH SỬA TỰ ĐỘNG] -----
 def parse_curl_command(curl_text: str) -> Dict[str, Any]:
-    """
-    [ĐÃ CẬP NHẬT] Nhận 'Copy as cURL (bash)' từ DevTools.
-    Tự động xử lý -b (cookie) và -H (header), và lọc bỏ header rác.
-    Trả về: {"url","method","headers","body"}
-    """
     args = shlex.split(curl_text)
-    method = "GET"
-    headers: Dict[str, str] = {}
-    data = None
-    url = ""
-
+    method = "GET"; headers = {}; data = None; url = ""
     i = 0
     while i < len(args):
         a = args[i]
-        if a == "curl":
-            i += 1
-            if i < len(args):
-                url = args[i]
-        elif a in ("-X", "--request"):
-            i += 1
-            if i < len(args):
-                method = args[i].upper()
+        if a == "curl": i += 1; url = args[i] if i < len(args) else ""
+        elif a in ("-X", "--request"): i += 1; method = args[i].upper() if i < len(args) else "GET"
         elif a in ("-H", "--header"):
             i += 1
-            if i < len(args):
-                h = args[i]
-                if ":" in h:
-                    k, v = h.split(":", 1)
-                    headers[k.strip()] = v.strip()
-        elif a in ("-b", "--cookie"):
-            i += 1
-            if i < len(args):
-                headers['cookie'] = args[i]
-        elif a in ("--data", "--data-raw", "--data-binary", "-d"):
-            i += 1
-            if i < len(args):
-                data = args[i]
+            if i < len(args): h = args[i]; k, v = h.split(":", 1); headers[k.strip()] = v.strip()
+        elif a in ("-b", "--cookie"): i += 1; headers['cookie'] = args[i] if i < len(args) else ""
+        elif a in ("--data", "--data-raw", "--data-binary", "-d"): i += 1; data = args[i] if i < len(args) else None
         i += 1
 
-    if method == "GET" and data is not None:
-        method = "POST"
+    if method == "GET" and data is not None: method = "POST"
     
     final_headers: Dict[str, str] = {}
     junk_prefixes = ('sec-ch-ua', 'sec-fetch-', 'priority', 'accept', 'content-length')
     for key, value in headers.items():
         low_key = key.lower()
-        is_junk = False
-        for prefix in junk_prefixes:
-            if low_key.startswith(prefix):
-                is_junk = True
-                break
-        if not is_junk:
+        if not any(low_key.startswith(p) for p in junk_prefixes):
             final_headers[key] = value
 
-    if not final_headers and headers:
-         return {"url": url, "method": method, "headers": headers, "body": data}
+    if not final_headers and headers: final_headers = headers
+    
+    body_json = None
+    if data:
+        try: body_json = json.loads(data)
+        except Exception: print(f"cURL body is not valid JSON, storing as raw text: {data[:50]}...")
+    
+    return {"url": url, "method": method, "headers": final_headers, "body_json": body_json}
 
-    return {"url": url, "method": method, "headers": final_headers, "body": data}
-# ----- [HẾT TOOL CHỈNH SỬA TỰ ĐỘNG] -----
+# =================== [THÊM MỚI] Hàm gọi API Tin nhắn ===================
+def fetch_chats() -> List[Dict[str, str]]:
+    """
+    Gọi API getNewConversion và lọc ra các tin nhắn CHƯA XEM.
+    """
+    if not CHAT_CONFIG.get("url"):
+        print("[WARN] CHAT_API_URL is not set. Skipping chat fetch.")
+        return []
 
+    global SEEN_CHAT_DATES
+    
+    try:
+        if CHAT_CONFIG["method"] == "POST":
+            r = requests.post(CHAT_CONFIG["url"], headers=CHAT_CONFIG["headers"], 
+                              json=CHAT_CONFIG["body_json"], verify=VERIFY_TLS, timeout=25)
+        else:
+            r = requests.get(CHAT_CONFIG["url"], headers=CHAT_CONFIG["headers"], 
+                             verify=VERIFY_TLS, timeout=25)
 
-# =================== Poller ===================
+        data = r.json()
+        if not isinstance(data, list):
+            print(f"[ERROR] Chat API did not return a list. Response: {r.text[:200]}")
+            return []
+
+        new_messages = []
+        current_chat_dates = set()
+        
+        # `data` là 1 list, vd: [{"guest_user": "...", "last_chat": "...", "date": "..."}]
+        for chat in data:
+            if not isinstance(chat, dict): continue
+            
+            # Dùng 'date' làm ID duy nhất (vd: "2025-10-29T03:09:58.000+00:00")
+            # Hoặc fallback về hash(user+chat) nếu không có
+            chat_id = chat.get("date")
+            if not chat_id:
+                user = chat.get("guest_user", "")
+                msg = chat.get("last_chat", "")
+                chat_id = f"{user}:{msg}"
+
+            current_chat_dates.add(chat_id)
+
+            # Nếu ID này chưa thấy, và có 'newMes: 1' (hoặc cứ lấy)
+            # Dựa trên ảnh, 'newMes: 0' vẫn là tin mới.
+            if chat_id not in SEEN_CHAT_DATES:
+                SEEN_CHAT_DATES.add(chat_id)
+                new_messages.append({
+                    "user": chat.get("guest_user", "N/A"),
+                    "chat": chat.get("last_chat", "[không có nội dung]")
+                })
+        
+        # Dọn dẹp: Xóa các ID đã cũ (phòng trường hợp list chat rút gọn)
+        SEEN_CHAT_DATES.intersection_update(current_chat_dates)
+        
+        if new_messages:
+            print(f"Fetched {len(new_messages)} new chat message(s).")
+        return new_messages
+
+    except Exception as e:
+        print(f"fetch_chats error: {e}")
+        return []
+
+# =================== [VIẾT LẠI] Hàm Poller Chính ===================
 def poll_once():
     """
     [LOGIC ĐÃ CẬP NHẬT HOÀN TOÀN]
-    - Chỉ check getNotify (text) và xử lý JSON (nếu có).
-    - Logic chỉ thông báo khi SỐ TĂNG LÊN (0->1, 1->2).
-    - Bỏ qua thông báo khi SỐ GIẢM (1->0).
-    - Chỉ hiển thị các mục > BASELINE (fix lỗi Khiếu nại: 1).
-    - Gộp icon, sắp xếp thứ tự ưu tiên.
+    1. Gọi API getNotify.
+    2. Nếu 'c8: Tin nhắn' tăng, gọi API getNewConversion.
+    3. Gửi thông báo tổng hợp "siêu chuyên nghiệp".
     """
-    global LAST_NOTIFY_NUMS, API_URL, API_METHOD, HEADERS, BODY_JSON_ENV
+    global LAST_NOTIFY_NUMS, DAILY_ORDER_COUNT, DAILY_COUNTER_DATE 
 
-    if not API_URL:
-        print("No API_URL set")
+    if not NOTIFY_CONFIG.get("url"):
+        print("No NOTIFY_API_URL set")
         return
 
     try:
-        body_json = None
-        if API_METHOD == "POST" and BODY_JSON_ENV:
-            try:
-                body_json = json.loads(BODY_JSON_ENV)
-            except Exception:
-                body_json = None
-
-        # call
-        if API_METHOD == "POST":
-            r = requests.post(API_URL, headers=HEADERS, json=body_json, verify=VERIFY_TLS, timeout=25)
+        # 1. GỌI API THÔNG BÁO (getNotify)
+        if NOTIFY_CONFIG["method"] == "POST":
+            r = requests.post(NOTIFY_CONFIG["url"], headers=NOTIFY_CONFIG["headers"], 
+                              json=NOTIFY_CONFIG["body_json"], verify=VERIFY_TLS, timeout=25)
         else:
-            r = requests.get(API_URL, headers=HEADERS, verify=VERIFY_TLS, timeout=25)
+            r = requests.get(NOTIFY_CONFIG["url"], headers=NOTIFY_CONFIG["headers"], 
+                             verify=VERIFY_TLS, timeout=25)
 
-        # 1) thử JSON trước (API list-orders)
-        try:
-            data = r.json()
-        except Exception:
-            data = None
-
-        if data is not None:
-            # (Phần xử lý JSON API này giữ nguyên, nó dành cho API list-orders)
-            rows: List[Dict[str, Any]] = []
-            if isinstance(data, list):
-                rows = [x for x in data if isinstance(x, dict)]
-            elif isinstance(data, dict):
-                for key in ("data","items","rows","list","orders","result","content"):
-                    v = data.get(key)
-                    if isinstance(v, list):
-                        rows = [x for x in v if isinstance(x, dict)]
-                        break
-                if not rows:  # lồng 1 lớp
-                    for v in data.values():
-                        if isinstance(v, dict):
-                            for key in ("data","items","rows","list","orders","result","content"):
-                                vv = v.get(key)
-                                if isinstance(vv, list):
-                                    rows = [x for x in vv if isinstance(x, dict)]
-                                    break
-                        if rows:
-                            break
-            if rows:
-                sent = 0
-                for o in rows:
-                    uid = str(o.get("order_id") or o.get("id") or hashlib.md5(
-                        json.dumps(o, sort_keys=True, ensure_ascii=False).encode("utf-8")
-                    ).hexdigest())
-                    if uid in SEEN_JSON_IDS:
-                        continue
-                    SEEN_JSON_IDS.add(uid)
-                    buyer = html.escape(str(o.get("buyer_name") or o.get("buyer") or o.get("customer") or "N/A"))
-                    total = o.get("total") or o.get("grand_total") or o.get("price_total")
-                    msg = (
-                        f"🛒 <b>ĐƠN MỚI</b>\n"
-                        f"• Mã: <b>{html.escape(uid)}</b>\n"
-                        f"• Người mua: <b>{buyer}</b>\n"
-                        f"• Tổng: <b>{total}</b>"
-                    )
-                    tg_send(msg)
-                    sent += 1
-                if sent:
-                    print(f"Sent {sent} order(s) from JSON API.")
-                return  # kết thúc nếu là JSON
-
-        # 2) không phải JSON → text (getNotify)
         text = (r.text or "").strip()
         if not text:
             print("getNotify: empty response")
             return
 
-        # Nhận diện HTML (Cloudflare/login…)
         low = text[:200].lower()
         if low.startswith("<!doctype") or "<html" in low:
-            preview = html.escape(text[:800])
-            msg = (
-                "⚠️ <b>getNotify trả về HTML</b> (có thể cookie/CF token hết hạn hoặc header thiếu).\n"
-                f"Độ dài: {len(text)} ký tự. Preview:\n<code>{preview}</code>\n"
-                "→ Cập nhật HEADERS_JSON bằng 'Copy as cURL (bash)'."
-            )
             if text != str(LAST_NOTIFY_NUMS):
-                tg_send(msg)
+                tg_send("⚠️ <b>getNotify trả về HTML</b> (Cookie/Header hết hạn?).")
             print("HTML detected, preview sent. Probably headers/cookie expired.")
             return
-
-        # Text quá dài
-        if len(text) > 1200:
-            preview = html.escape(text[:1200])
-            msg = (
-                f"ℹ️ <b>getNotify (rút gọn)</b>\n"
-                f"Độ dài: {len(text)} ký tự. Preview:\n<code>{preview}</code>"
-            )
-            tg_send(msg)
-            return
         
-        # ----- [BẮT ĐẦU LOGIC MỚI CỦA BẠN] -----
+        # 2. XỬ LÝ KẾT QUẢ getNotify
         parsed = parse_notify_text(text)
         
         if "numbers" in parsed:
-            current_nums = parsed["numbers"]
+            now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=7)))
+            today_str = now.strftime("%Y-%m-%d")
+            time_str = now.strftime("%H:%M:%S")
+
+            if today_str != DAILY_COUNTER_DATE:
+                print(f"New day detected ({today_str}). Resetting daily counters.")
+                DAILY_COUNTER_DATE = today_str
+                DAILY_ORDER_COUNT.clear()
             
+            current_nums = parsed["numbers"]
             if len(current_nums) != len(LAST_NOTIFY_NUMS):
                 LAST_NOTIFY_NUMS = [0] * len(current_nums)
 
-            # Hàm tạo icon
             def get_icon_for_label(label: str) -> str:
-                low_label = label.lower()
-                if "sản phẩm" in low_label: return "📦"
-                if "dịch vụ" in low_label: return "🛎️"
-                if "khiếu nại" in low_label: return "⚠️"
-                if "đặt trước" in low_label: return "⏰"
-                if "reseller" in low_label: return "👥"
-                if "đánh giá" in low_label: return "💬"
-                if "tin nhắn" in low_label: return "✉️"
+                low = label.lower()
+                if "sản phẩm" in low: return "📦"
+                if "dịch vụ" in low: return "🛎️"
+                if "khiếu nại" in low: return "⚠️"
+                if "đặt trước" in low: return "⏰"
+                if "đánh giá" in low: return "💬"
+                if "tin nhắn" in low: return "✉️"
                 return "•"
 
             labels = _labels_for_notify(len(current_nums))
-            results = {} # Dùng dict để lưu kết quả
+            instant_alerts_map = {}
             has_new_notification = False
+            has_new_chat = False # [THÊM MỚI]
 
-            # 1. So sánh giá trị MỚI và CŨ
+            # 3. SO SÁNH GIÁ TRỊ MỚI VÀ CŨ
             for i in range(len(current_nums)):
                 current_val = current_nums[i]
                 last_val = LAST_NOTIFY_NUMS[i]
-                label = labels[i] # Lấy label
+                label = labels[i]
                 
-                # [YÊU CẦU CHÍNH] Chỉ kích hoạt khi SỐ TĂNG LÊN
                 if current_val > last_val:
                     has_new_notification = True
+                    
+                    if "đơn hàng sản phẩm" in label.lower():
+                        DAILY_ORDER_COUNT[label] += (current_val - last_val)
+                    elif "đơn hàng dịch vụ" in label.lower():
+                        DAILY_ORDER_COUNT[label] += (current_val - last_val)
+                    
+                    # [THÊM MỚI] Phát hiện có tin nhắn mới
+                    if "tin nhắn" in label.lower():
+                        has_new_chat = True
                 
-                # [FIX KHIẾU NẠI] Lấy mốc cơ bản (baseline)
                 baseline = COLUMN_BASELINES[label]
-
-                # [FIX KHIẾU NẠI] Chỉ hiển thị nếu giá trị LỚN HƠN mốc cơ bản
                 if current_val > baseline:
                     icon = get_icon_for_label(label)
-                    results[label] = f"{icon} <b>{label}</b>: <b>{current_val}</b>"
+                    instant_alerts_map[label] = f"{icon} <b>{label}</b>: <b>{current_val}</b>"
 
-            # 2. Gửi thông báo NẾU CÓ ÍT NHẤT 1 MỤC TĂNG
+            # 4. GỌI API TIN NHẮN (nếu cần)
+            new_chat_messages = []
+            if has_new_chat:
+                fetched_messages = fetch_chats()
+                for chat in fetched_messages:
+                    user = html.escape(chat.get("user", "N/A"))
+                    msg = html.escape(chat.get("chat", "..."))
+                    # Thêm định dạng "siêu chuyên nghiệp"
+                    new_chat_messages.append(f"    ✉️ <b>{user}</b>: <i>{msg}</i>")
+
+            # 5. GỬI THÔNG BÁO TỔNG HỢP
             if has_new_notification:
-                # [SẮP XẾP THỨ TỰ] (C1, C6, C5, C7, C8, C2)
                 ordered_labels = [
-                    "Đơn hàng sản phẩm",  # c1
-                    "Đơn hàng dịch vụ",   # c6
-                    "Đặt trước",          # c5
-                    "Khiếu nại",         # c7
-                    "Tin nhắn",            # c8
-                    "Đánh giá"            # c2
+                    "Đơn hàng sản phẩm", "Đơn hàng dịch vụ", "Đặt trước",
+                    "Khiếu nại", "Tin nhắn", "Đánh giá"
                 ]
                 
-                lines = []
-                # Thêm các mục theo thứ tự ưu tiên
+                instant_alert_lines = []
                 for label in ordered_labels:
-                    if label in results:
-                        lines.append(results.pop(label))
+                    if label in instant_alerts_map:
+                        instant_alert_lines.append(instant_alerts_map.pop(label))
+                for remaining_line in instant_alerts_map.values():
+                    instant_alert_lines.append(remaining_line)
                 
-                # Thêm các mục còn lại (vd: c3, c4)
-                for remaining_line in results.values():
-                    lines.append(remaining_line)
+                summary_lines = []
+                total_today = 0
+                product_total = DAILY_ORDER_COUNT.get("Đơn hàng sản phẩm", 0)
+                service_total = DAILY_ORDER_COUNT.get("Đơn hàng dịch vụ", 0)
                 
-                if lines:
-                    detail = "\n".join(lines)
-                    msg = f"🔔 <b>TapHoa có thông báo mới</b>\n{detail}"
-                    tg_send(msg)
-                    print("getNotify changes (INCREASE) -> Telegram sent.")
-                else:
-                    print("getNotify changes (INCREASE but all <= baseline) -> Skipping.")
+                if product_total > 0:
+                    summary_lines.append(f"    📦 Đơn hàng sản phẩm: <b>{product_total}</b>")
+                    total_today += product_total
+                if service_total > 0:
+                    summary_lines.append(f"    🛎️ Đơn hàng dịch vụ: <b>{service_total}</b>")
+                    total_today += service_total
+
+                # Lắp ráp thông báo "siêu chuyên nghiệp"
+                msg_lines = []
+                msg_lines.append(f"<b>📊 BÁO CÁO NHANH TỪ TAPHOA</b>")
+                msg_lines.append(f"<i>Thời gian: {time_str} - Ngày: {today_str} (GMT+7)</i>")
+                msg_lines.append("====================")
+
+                # [THÊM MỚI] Đặt tin nhắn lên đầu
+                if new_chat_messages:
+                    msg_lines.append("<b>💬 TIN NHẮN MỚI:</b>")
+                    msg_lines.extend(new_chat_messages)
+                
+                if instant_alert_lines:
+                    msg_lines.append("<b>🔔 THÔNG BÁO TỨC THỜI:</b>")
+                    msg_lines.extend(instant_alert_lines)
+
+                if total_today > 0:
+                    msg_lines.append("\n" + f"<b>📈 TỔNG KẾT HÔM NAY (tổng {total_today} đơn):</b>")
+                    msg_lines.extend(summary_lines)
+                
+                msg = "\n".join(msg_lines)
+                tg_send(msg)
+                print("getNotify changes (INCREASE) -> Professional Telegram sent.")
+                
             else:
                 print("getNotify unchanged or DECREASED -> Skipping.")
 
-            # 3. Cập nhật trạng thái CŨ = MỚI để check lần sau
             LAST_NOTIFY_NUMS = current_nums
         
         else:
-            # Xử lý trường hợp getNotify trả về text lạ
             if text != str(LAST_NOTIFY_NUMS):
-                msg = f"🔔 <b>TapHoa getNotify thay đổi</b>\n<code>{html.escape(text)}</code>"
+                msg = f"🔔 <b>TapHoa getNotify (lỗi)</b>\n<code>{html.escape(text)}</code>"
                 tg_send(msg)
                 print("getNotify (non-numeric) changed -> Telegram sent.")
-        # ----- [KẾT THÚC LOGIC MỚI] -----
 
     except Exception as e:
-        print("poll_once error:", e)
+        print(f"poll_once error: {e}")
 
 def poller_loop():
-    print("▶ poller started (getNotify compatible)")
+    print("▶ Poller started (Dual-API Mode)")
+    # Chạy lần đầu để khởi tạo SEEN_CHAT_DATES
+    print("Running initial chat fetch to set baseline...")
+    fetch_chats()
+    print("Running initial notify poll...")
     poll_once()
+    
     while True:
         time.sleep(POLL_INTERVAL)
         poll_once()
 
 # =================== API endpoints ===================
 
-# [GIAO DIỆN MỚI] Đã viết lại toàn bộ HTML/CSS/JS cho "siêu đẹp"
+# [VIẾT LẠI] Giao diện web hỗ trợ 2 ô cURL
 @app.get("/", response_class=HTMLResponse)
 async def get_curl_ui():
     """
-    Trả về giao diện HTML "siêu đẹp" để dán cURL.
+    Trả về giao diện HTML "siêu chuyên nghiệp" để dán 2 cURL.
     """
     html_content = """
     <!DOCTYPE html>
@@ -387,195 +388,146 @@ async def get_curl_ui():
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Cập nhật cURL Poller</title>
         <style>
+            @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap');
             :root {
-                --bg-color: #f8f9fa;
-                --text-color: #212529;
+                --bg-gradient: linear-gradient(135deg, #f4f7f9 0%, #e1e7ed 100%);
+                --text-color: #333;
                 --card-bg: #ffffff;
                 --border-color: #dee2e6;
-                --primary-color: #007bff;
-                --primary-hover: #0056b3;
-                --success-bg: #d4edda;
-                --success-border: #c3e6cb;
-                --success-text: #155724;
-                --error-bg: #f8d7da;
-                --error-border: #f5c6cb;
-                --error-text: #721c24;
-                --loading-bg: #e2e3e5;
-                --loading-border: #d6d8db;
-                --loading-text: #383d41;
-                --shadow: 0 4px 12px rgba(0,0,0,0.05);
+                --primary-color: #0061ff;
+                --primary-hover: #004ecc;
+                --primary-rgb: 0, 97, 255;
+                --success-bg: #d1f7e0; --success-border: #a3e9be; --success-text: #0a6847;
+                --error-bg: #f8d7da; --error-border: #f5c6cb; --error-text: #721c24;
+                --loading-bg: #e9ecef; --loading-border: #ced4da; --loading-text: #495057;
+                --shadow: 0 8px 25px rgba(0,0,0,0.08);
+                --shadow-hover: 0 12px 30px rgba(0, 97, 255, 0.15);
             }
-            
             @media (prefers-color-scheme: dark) {
                 :root {
-                    --bg-color: #121212;
-                    --text-color: #e0e0e0;
-                    --card-bg: #1e1e1e;
-                    --border-color: #444;
-                    --primary-color: #0d6efd;
-                    --primary-hover: #0a58ca;
-                    --success-bg: #1a3a24;
-                    --success-border: #2a5a3a;
-                    --success-text: #a7d0b0;
-                    --error-bg: #3a1a24;
-                    --error-border: #5a2a3a;
-                    --error-text: #f0a7b0;
-                    --loading-bg: #343a40;
-                    --loading-border: #495057;
-                    --loading-text: #f8f9fa;
+                    --bg-gradient: linear-gradient(135deg, #2b3035 0%, #1a1e23 100%);
+                    --text-color: #f0f0f0;
+                    --card-bg: #22272e;
+                    --border-color: #444951;
+                    --primary-color: #1a88ff; --primary-hover: #006fff;
+                    --primary-rgb: 26, 136, 255;
+                    --success-bg: #162a22; --success-border: #2a5a3a; --success-text: #a7d0b0;
+                    --error-bg: #3a1a24; --error-border: #5a2a3a; --error-text: #f0a7b0;
+                    --loading-bg: #343a40; --loading-border: #495057; --loading-text: #f8f9fa;
                 }
             }
-            
             body {
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-                margin: 0;
-                padding: 2rem;
-                background-color: var(--bg-color);
-                color: var(--text-color);
-                transition: background-color 0.2s, color 0.2s;
-                line-height: 1.6;
+                font-family: 'Roboto', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                margin: 0; padding: 2rem; background: var(--bg-gradient);
+                color: var(--text-color); line-height: 1.6; min-height: 100vh;
+                box-sizing: border-box;
             }
             .container {
-                max-width: 800px;
-                margin: 2rem auto;
-                background: var(--card-bg);
-                padding: 2.5rem;
-                border-radius: 12px;
-                box-shadow: var(--shadow);
-                border: 1px solid var(--border-color);
+                max-width: 800px; margin: 2rem auto; background: var(--card-bg);
+                padding: 2.5rem 3rem; border-radius: 16px;
+                box-shadow: var(--shadow); border: 1px solid var(--border-color);
+                transition: transform 0.3s ease, box-shadow 0.3s ease;
+            }
+            .container:hover {
+                transform: translateY(-5px); box-shadow: var(--shadow-hover);
             }
             h1 {
-                color: var(--text-color);
-                border-bottom: 2px solid var(--primary-color);
-                padding-bottom: 0.5rem;
-                margin-top: 0;
+                color: var(--primary-color); font-size: 2.25rem; font-weight: 700;
+                margin-top: 0; margin-bottom: 1rem; display: flex; align-items: center;
+            }
+            h1 span { font-size: 2.5rem; margin-right: 0.75rem; line-height: 1; filter: grayscale(30%); }
+            p.description {
+                font-size: 1.1rem; color: var(--text-color); opacity: 0.8; margin-bottom: 2rem;
             }
             label {
-                display: block;
-                margin-top: 1.5rem;
-                margin-bottom: 0.5rem;
-                font-weight: 600;
-                font-size: 0.9rem;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
+                display: block; margin-top: 1.5rem; margin-bottom: 0.5rem;
+                font-weight: 500; font-size: 0.9rem; color: var(--text-color); opacity: 0.9;
             }
             textarea, input[type="password"] {
-                width: 100%;
-                padding: 12px;
-                border: 1px solid var(--border-color);
-                border-radius: 8px;
-                font-family: "SF Mono", "Fira Code", "Consolas", monospace;
-                font-size: 14px;
-                background-color: var(--bg-color);
-                color: var(--text-color);
-                box-sizing: border-box; /* Fix 100% width */
+                width: 100%; padding: 14px; border: 1px solid var(--border-color);
+                border-radius: 8px; font-family: "SF Mono", "Fira Code", "Consolas", monospace;
+                font-size: 14px; background-color: var(--bg-color); color: var(--text-color);
+                box-sizing: border-box; transition: border-color 0.2s, box-shadow 0.2s;
             }
-            textarea { height: 250px; resize: vertical; }
+            textarea { height: 200px; resize: vertical; }
+            textarea:focus, input[type="password"]:focus {
+                outline: none; border-color: var(--primary-color);
+                box-shadow: 0 0 0 3px rgba(var(--primary-rgb), 0.25);
+            }
             button {
-                background-color: var(--primary-color);
-                color: white;
-                padding: 14px 22px;
-                border: none;
-                border-radius: 8px;
-                cursor: pointer;
-                font-size: 16px;
-                font-weight: 600;
-                margin-top: 2rem;
-                transition: background-color 0.2s, transform 0.1s;
+                background: var(--primary-color); color: white; padding: 16px 24px;
+                border: none; border-radius: 8px; cursor: pointer;
+                font-size: 1rem; font-weight: 700; letter-spacing: 0.5px;
+                margin-top: 2rem; transition: background-color 0.2s, transform 0.1s;
                 width: 100%;
             }
-            button:disabled {
-                background-color: var(--border-color);
-                cursor: not-allowed;
-            }
-            button:not(:disabled):hover {
-                background-color: var(--primary-hover);
-                transform: translateY(-2px);
-            }
+            button:disabled { background-color: var(--border-color); cursor: not-allowed; opacity: 0.7; }
+            button:not(:disabled):hover { background: var(--primary-hover); transform: translateY(-2px); }
             
-            /* [GIAO DIỆN MỚI] Trạng thái "Màu mè" */
             .status-message {
-                margin-top: 2rem;
-                padding: 1.25rem;
-                border-radius: 8px;
-                font-weight: 600;
-                display: none; /* Ẩn mặc định */
-                border: 1px solid transparent;
-                opacity: 0;
-                transform: translateY(10px);
-                transition: opacity 0.3s ease-out, transform 0.3s ease-out;
+                margin-top: 2rem; padding: 1.25rem; border-radius: 8px; font-weight: 500;
+                display: none; border: 1px solid transparent; opacity: 0;
+                transform: translateY(10px); transition: opacity 0.3s ease-out, transform 0.3s ease-out;
             }
-            .status-message.show {
-                display: block;
-                opacity: 1;
-                transform: translateY(0);
-            }
-            
-            .status-message.loading {
-                background-color: var(--loading-bg);
-                border-color: var(--loading-border);
-                color: var(--loading-text);
-            }
-            .status-message.loading::before {
-                content: '⏳  ';
-            }
-
-            .status-message.success {
-                background-color: var(--success-bg);
-                border-color: var(--success-border);
-                color: var(--success-text);
-                box-shadow: 0 4px 10px rgba(21, 87, 36, 0.1);
-            }
-            .status-message.success::before {
-                content: '✅  CẤU HÌNH THÀNH CÔNG! ';
-                font-weight: 700;
-            }
-
-            .status-message.error {
-                background-color: var(--error-bg);
-                border-color: var(--error-border);
-                color: var(--error-text);
-                box-shadow: 0 4px 10px rgba(114, 28, 36, 0.1);
-            }
-            .status-message.error::before {
-                content: '❌  CẤU HÌNH THẤT BẠI! ';
-                font-weight: 700;
-            }
+            .status-message.show { display: block; opacity: 1; transform: translateY(0); }
+            .status-message strong { font-weight: 700; display: block; margin-bottom: 0.25rem; }
+            .status-message.loading { background-color: var(--loading-bg); border-color: var(--loading-border); color: var(--loading-text); }
+            .status-message.loading strong::before { content: '⏳  ĐANG XỬ LÝ...'; }
+            .status-message.loading span { font-style: italic; }
+            .status-message.success { background-color: var(--success-bg); border-color: var(--success-border); color: var(--success-text); }
+            .status-message.success strong::before { content: '✅  CẤU HÌNH THÀNH CÔNG!'; }
+            .status-message.error { background-color: var(--error-bg); border-color: var(--error-border); color: var(--error-text); }
+            .status-message.error strong::before { content: '❌  CẤU HÌNH THẤT BẠI!'; }
+            .footer-text { text-align: center; margin-top: 2.5rem; font-size: 0.85rem; color: var(--text-color); opacity: 0.6; }
         </style>
     </head>
     <body>
         <div class="container">
-            <h1>Cập nhật Poller bằng cURL</h1>
-            <p>Dán nội dung 'Copy as cURL (bash)' từ DevTools (F12) vào đây. Cấu hình sẽ được áp dụng ngay lập tức cho poller.</p>
+            <h1><span>⚙️</span>Trình Cập Nhật Poller (Dual-API)</h1>
+            <p class="description">Dán 2 cURL từ DevTools. Cấu hình sẽ được áp dụng ngay lập tức.</p>
             
             <form id="curl-form">
-                <label for="curl_text">Lệnh cURL (bash):</label>
-                <textarea id="curl_text" name="curl" placeholder="curl 'https://taphoammo.net/api/getNotify' ..." required></textarea>
+                <label for="curl_notify_text">1. cURL Thông Báo (getNotify):</label>
+                <textarea id="curl_notify_text" name="curl_notify" placeholder="curl '.../api/getNotify' ..." required></textarea>
                 
+                <label for="curl_chat_text">2. cURL Tin Nhắn (getNewConversion):</label>
+                <textarea id="curl_chat_text" name="curl_chat" placeholder="curl '.../api/getNewConversion' ..." required></textarea>
+
                 <label for="secret_key">Secret Key:</label>
                 <input type="password" id="secret_key" name="secret" placeholder="Nhập WEBHOOK_SECRET của bạn" required>
                 
                 <button type="submit" id="submit-btn">Cập nhật và Chạy Thử</button>
             </form>
             
-            <div id="status" class="status-message"></div>
+            <div id="status" class="status-message">
+                <strong></strong>
+                <span id="status-body"></span>
+            </div>
+            
+            <p class="footer-text">TapHoa Poller Service 3.0</p>
         </div>
         
         <script>
             document.getElementById("curl-form").addEventListener("submit", async function(e) {
                 e.preventDefault();
                 
-                const curlText = document.getElementById("curl_text").value;
+                const curlNotifyText = document.getElementById("curl_notify_text").value;
+                const curlChatText = document.getElementById("curl_chat_text").value;
                 const secret = document.getElementById("secret_key").value;
+                
                 const statusEl = document.getElementById("status");
+                const statusBody = document.getElementById("status-body");
+                const statusHeader = statusEl.querySelector("strong");
                 const button = document.getElementById("submit-btn");
                 
-                statusEl.textContent = "Đang xử lý, vui lòng chờ...";
-                statusEl.className = "status-message loading show"; // Hiện trạng thái loading
+                statusHeader.textContent = ""; 
+                statusBody.textContent = "Vui lòng chờ trong giây lát...";
+                statusEl.className = "status-message loading show";
                 button.disabled = true;
                 
-                if (!curlText || !secret) {
-                    statusEl.textContent = "Vui lòng nhập cả cURL và Secret Key.";
+                if (!curlNotifyText || !curlChatText || !secret) {
+                    statusHeader.textContent = "";
+                    statusBody.textContent = "Vui lòng nhập ĐẦY ĐỦ cả 2 cURL và Secret Key.";
                     statusEl.className = "status-message error show";
                     button.disabled = false;
                     return;
@@ -585,20 +537,26 @@ async def get_curl_ui():
                     const response = await fetch(`/debug/set-curl?secret=${encodeURIComponent(secret)}`, {
                         method: "POST",
                         headers: {"Content-Type": "application/json"},
-                        body: JSON.stringify({ curl: curlText })
+                        body: JSON.stringify({ 
+                            curl_notify: curlNotifyText,
+                            curl_chat: curlChatText
+                        })
                     });
                     
                     const result = await response.json();
                     
                     if (response.ok) {
-                        statusEl.textContent = "Đã áp dụng cấu hình mới. Poller sẽ sử dụng thông tin này cho lần chạy tiếp theo.";
+                        statusHeader.textContent = "";
+                        statusBody.textContent = "Đã áp dụng cấu hình cho cả 2 API. Poller sẽ sử dụng thông tin này ngay bây giờ.";
                         statusEl.className = "status-message success show";
                     } else {
-                        statusEl.textContent = `Lỗi: ${result.detail || 'Lỗi không xác định.'}`;
+                        statusHeader.textContent = "";
+                        statusBody.textContent = `Lỗi: ${result.detail || 'Lỗi không xác định.'}`;
                         statusEl.className = "status-message error show";
                     }
                 } catch (err) {
-                    statusEl.textContent = `Lỗi kết nối: ${err.message}. Kiểm tra lại mạng hoặc URL service.`;
+                    statusHeader.textContent = "";
+                    statusBody.textContent = `Lỗi kết nối: ${err.message}. Kiểm tra lại mạng hoặc URL service.`;
                     statusEl.className = "status-message error show";
                 } finally {
                     button.disabled = false;
@@ -614,74 +572,76 @@ async def get_curl_ui():
 @app.get("/healthz")
 def health():
     return {
-        "ok": True,
-        "poller": not DISABLE_POLLER,
-        "seen_json": len(SEEN_JSON_IDS),
-        "last_notify_nums": LAST_NOTIFY_NUMS, # [ĐÃ SỬA]
-        "api": {"url": API_URL, "method": API_METHOD}
+        "ok": True, "poller": not DISABLE_POLLER,
+        "last_notify_nums": LAST_NOTIFY_NUMS,
+        "daily_stats": {"date": DAILY_COUNTER_DATE, "counts": DAILY_ORDER_COUNT},
+        "seen_chats": len(SEEN_CHAT_DATES),
+        "api_notify": {"url": NOTIFY_CONFIG.get("url")},
+        "api_chat": {"url": CHAT_CONFIG.get("url")}
     }
 
 @app.get("/debug/notify-now")
 def debug_notify(secret: str):
     if secret != WEBHOOK_SECRET:
         raise HTTPException(status_code=401, detail="unauthorized")
-    before = str(LAST_NOTIFY_NUMS) # [ĐÃ SỬA]
+    before = str(LAST_NOTIFY_NUMS) 
     poll_once()
-    after = str(LAST_NOTIFY_NUMS) # [ĐÃ SỬA]
-    return {"ok": True, "last_before": before, "last_after": after}
-
-@app.post("/debug/parse-curl")
-async def debug_parse_curl(req: Request, secret: str):
-    if secret != WEBHOOK_SECRET:
-        raise HTTPException(status_code=401, detail="unauthorized")
-    body = await req.json()
-    curl_txt = str(body.get("curl") or "")
-    parsed = parse_curl_command(curl_txt)
+    after = str(LAST_NOTIFY_NUMS)
     return {
-        "ok": True,
-        "parsed": parsed,
-        "env_suggestion": {
-            "TAPHOA_API_ORDERS_URL": parsed["url"],
-            "TAPHOA_METHOD": parsed["method"],
-            "HEADERS_JSON": parsed["headers"],
-            "TAPHOA_BODY_JSON": parsed["body"] or ""
-        }
+        "ok": True, "last_before": before, "last_after": after,
+        "daily_stats": DAILY_ORDER_COUNT
     }
 
+# [VIẾT LẠI] Endpoint cập nhật 2 cURL
 @app.post("/debug/set-curl")
 async def debug_set_curl(req: Request, secret: str):
-    """
-    Áp cURL tạm thời trong process (không ghi ENV). Dùng để test nhanh trên Render.
-    """
     if secret != WEBHOOK_SECRET:
         raise HTTPException(status_code=401, detail="unauthorized")
-    body = await req.json()
-    curl_txt = str(body.get("curl") or "")
-    parsed = parse_curl_command(curl_txt)
-
-    global API_URL, API_METHOD, HEADERS, BODY_JSON_ENV
-    API_URL = parsed["url"]
-    API_METHOD = parsed["method"]
-    HEADERS = parsed["headers"]
-    BODY_JSON_ENV = parsed["body"] or ""
-
-    # [SỬA] Reset lại bộ đếm khi set cURL mới
-    global LAST_NOTIFY_NUMS
-    LAST_NOTIFY_NUMS = [] 
     
-    poll_once() # Chạy thử 1 lần
+    body = await req.json()
+    curl_notify_txt = str(body.get("curl_notify") or "")
+    curl_chat_txt = str(body.get("curl_chat") or "")
+
+    if not curl_notify_txt or not curl_chat_txt:
+        raise HTTPException(status_code=400, detail="curl_notify and curl_chat are required.")
+
+    parsed_notify = parse_curl_command(curl_notify_txt)
+    parsed_chat = parse_curl_command(curl_chat_txt)
+
+    # Ghi đè cấu hình runtime toàn cục
+    global NOTIFY_CONFIG, CHAT_CONFIG
+    global LAST_NOTIFY_NUMS, DAILY_ORDER_COUNT, DAILY_COUNTER_DATE, SEEN_CHAT_DATES
+    
+    NOTIFY_CONFIG = parsed_notify
+    CHAT_CONFIG = parsed_chat
+
+    # Reset lại toàn bộ
+    LAST_NOTIFY_NUMS = []
+    DAILY_ORDER_COUNT.clear()
+    DAILY_COUNTER_DATE = "" 
+    SEEN_CHAT_DATES.clear()
+    
+    print("--- CONFIG UPDATED BY UI ---")
+    print(f"Notify API set to: {NOTIFY_CONFIG.get('url')}")
+    print(f"Chat API set to: {CHAT_CONFIG.get('url')}")
+    
+    # Chạy thử 1 lần (sẽ chạy cả 2 API nếu cần)
+    poll_once()
+    
     return {
         "ok": True,
-        "using": {
-            "url": API_URL,
-            "method": API_METHOD,
-            "headers": HEADERS,
-            "body": BODY_JSON_ENV
+        "using_notify": {
+            "url": NOTIFY_CONFIG.get("url"),
+            "method": NOTIFY_CONFIG.get("method"),
+            "headers": NOTIFY_CONFIG.get("headers"),
         },
-        "note": "Applied for current process only. Update Render Environment to persist."
+        "using_chat": {
+            "url": CHAT_CONFIG.get("url"),
+            "method": CHAT_CONFIG.get("method"),
+            "headers": CHAT_CONFIG.get("headers"),
+        },
+        "note": "Applied for current process. Update Render Environment to persist."
     }
-
-# [ĐÃ XÓA] Endpoint /taphoammo (webhook) đã bị xóa
 
 # =================== START ===================
 def _maybe_start():
