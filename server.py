@@ -90,7 +90,7 @@ def send_daily_summary(date_str: str, counts: defaultdict):
         return
 
     msg_lines = [
-        f"<b>📈 TỔNG KẾT NGÀY {date_str} 📈</b>",
+        f"<b>🗓️ TỔNG KẾT NGÀY {date_str}</b>", # [THAY ĐỔI ICON]
         "===================="
     ]
     
@@ -181,10 +181,12 @@ def parse_curl_command(curl_text: str) -> Dict[str, Any]:
     return {"url": url, "method": method, "headers": final_headers, "body_json": body_json}
 
 # =================== [CẬP NHẬT] Hàm gọi API Tin nhắn ===================
-def fetch_chats() -> List[Dict[str, str]]:
+def fetch_chats(is_baseline_run: bool = False) -> List[Dict[str, str]]:
     """
-    Gọi API getNewConversion và lọc ra các tin nhắn CHƯA XEM.
-    [CẬP NHẬT] Giờ đây sẽ trả về cả tin nhắn trước đó.
+    [CẬP NHẬT]
+    Gọi API getNewConversion.
+    - Nếu is_baseline_run = True: Chỉ cập nhật LAST_SEEN_CHATS (bộ nhớ tin cũ).
+    - Nếu is_baseline_run = False: Cập nhật SEEN_CHAT_DATES và trả về tin nhắn mới.
     """
     if not CHAT_CONFIG.get("url"):
         print("[WARN] CHAT_API_URL is not set. Skipping chat fetch.")
@@ -219,22 +221,29 @@ def fetch_chats() -> List[Dict[str, str]]:
             chat_id = chat.get("date")
             if not chat_id:
                 chat_id = f"{user_id}:{current_msg}" # Fallback
+            
+            if not is_baseline_run:
+                # [LOGIC SỬA LỖI] Chỉ chạy logic "tin nhắn mới" nếu đây KHÔNG PHẢI là
+                # lần chạy baseline đầu tiên.
+                current_chat_dates.add(chat_id)
 
-            current_chat_dates.add(chat_id)
-
-            if chat_id not in SEEN_CHAT_DATES:
-                SEEN_CHAT_DATES.add(chat_id)
-                previous_msg = LAST_SEEN_CHATS.get(user_id)
-                
-                new_messages.append({
-                    "user": user_id,
-                    "chat": current_msg,
-                    "previous_chat": previous_msg
-                })
-                
+                if chat_id not in SEEN_CHAT_DATES:
+                    SEEN_CHAT_DATES.add(chat_id)
+                    previous_msg = LAST_SEEN_CHATS.get(user_id)
+                    
+                    new_messages.append({
+                        "user": user_id,
+                        "chat": current_msg,
+                        "previous_chat": previous_msg
+                    })
+            
+            # [LOGIC SỬA LỖI] LUÔN cập nhật tin nhắn cuối cùng vào bộ nhớ,
+            # kể cả khi chạy baseline.
             LAST_SEEN_CHATS[user_id] = current_msg
         
-        SEEN_CHAT_DATES.intersection_update(current_chat_dates)
+        if not is_baseline_run:
+            # [LOGIC SỬA LỖI] Chỉ dọn dẹp SEEN_CHAT_DATES khi không phải baseline
+            SEEN_CHAT_DATES.intersection_update(current_chat_dates)
         
         for user in list(LAST_SEEN_CHATS.keys()):
             if user not in all_users_in_response:
@@ -242,7 +251,7 @@ def fetch_chats() -> List[Dict[str, str]]:
         
         if new_messages:
             print(f"Fetched {len(new_messages)} new chat message(s).")
-        return new_messages
+        return new_messages # Sẽ là [] nếu is_baseline_run = True
 
     except Exception as e:
         print(f"fetch_chats error: {e}")
@@ -253,7 +262,7 @@ def poll_once():
     """
     [LOGIC ĐÃ CẬP NHẬT]
     1. Gọi API getNotify.
-    2. Nếu 'c8: Tin nhắn' tăng, gọi API getNewConversion.
+    2. Nếu 'c8: Tin nhắn' tăng, gọi API getNewConversion (is_baseline_run=False).
     3. Gửi thông báo tức thời (không kèm tổng kết).
     4. [MỚI] Kiểm tra nếu sang ngày mới, gửi báo cáo tổng kết của ngày cũ.
     """
@@ -294,13 +303,10 @@ def poll_once():
 
             # [LOGIC MỚI] GỬI TỔNG KẾT NẾU SANG NGÀY MỚI
             if today_str != DAILY_COUNTER_DATE:
-                # Chỉ gửi nếu DAILY_COUNTER_DATE đã được set (tức là không phải lần chạy đầu tiên)
                 if DAILY_COUNTER_DATE:
                     print(f"New day detected ({today_str}). Sending summary for {DAILY_COUNTER_DATE}...")
-                    # Gửi tổng kết của ngày CŨ
                     send_daily_summary(DAILY_COUNTER_DATE, DAILY_ORDER_COUNT)
                 
-                # Cập nhật ngày mới và reset
                 DAILY_COUNTER_DATE = today_str
                 DAILY_ORDER_COUNT.clear()
             
@@ -330,23 +336,21 @@ def poll_once():
                     if "tin nhắn" in label.lower():
                         has_new_chat = True
                 
-                # [CẬP NHẬT] Định dạng thông báo tức thời
                 baseline = COLUMN_BASELINES[label]
                 if current_val > baseline:
                     icon = _get_icon_for_label(label)
-                    # Định dạng mới, gọn gàng hơn
                     instant_alerts_map[label] = f"  {icon} <b>{label}:</b> {current_val}"
 
             # 4. GỌI API TIN NHẮN (nếu cần)
             new_chat_messages = []
             if has_new_chat:
-                fetched_messages = fetch_chats()
+                # [LOGIC SỬA LỖI] Gọi với is_baseline_run=False (mặc định)
+                fetched_messages = fetch_chats() 
                 for chat in fetched_messages:
                     user = html.escape(chat.get("user", "N/A"))
                     msg = html.escape(chat.get("chat", "..."))
                     prev_msg = html.escape(chat.get("previous_chat") or "")
 
-                    # [CẬP NHẬT] Định dạng tin nhắn mới, chuyên nghiệp hơn
                     new_chat_messages.append(f"<b>--- Tin nhắn từ: {user} ---</b>")
                     if prev_msg and prev_msg != msg:
                         new_chat_messages.append(f"  <i>Lần trước: {prev_msg}</i>")
@@ -372,7 +376,7 @@ def poll_once():
 
                 # Lắp ráp thông báo "siêu chuyên nghiệp"
                 msg_lines = [
-                    f"<b>📊 BÁO CÁO NHANH - TAPHOAMMO 📊</b>",
+                    f"<b>🏪 BÁO CÁO NHANH - TAPHOAMMO</b>", # [THAY ĐỔI ICON]
                     f"<i>(Lúc {time_str} - Ngày {today_str})</i>"
                 ]
 
@@ -386,8 +390,6 @@ def poll_once():
                     msg_lines.append("➖➖➖➖➖➖➖➖➖➖➖")
                     msg_lines.append("<b>🔔 CẬP NHẬT TRẠNG THÁI:</b>")
                     msg_lines.extend(instant_alert_lines)
-                
-                # Đã xóa phần "Tổng kết hôm nay" khỏi đây
                 
                 msg = "\n".join(msg_lines)
                 tg_send(msg)
@@ -407,16 +409,17 @@ def poll_once():
     except Exception as e:
         print(f"poll_once error: {e}")
 
+# [CẬP NHẬT] Vòng lặp Poller
 def poller_loop():
     print("▶ Poller started (Dual-API Mode)")
-    # Chạy lần đầu để khởi tạo SEEN_CHAT_DATES và DAILY_COUNTER_DATE
-    print("Running initial chat fetch to set baseline...")
-    fetch_chats()
+    # [LOGIC SỬA LỖI] Chạy fetch_chats ở chế độ baseline (chỉ lấy tin cũ)
+    print("Running initial chat fetch to set baseline (LAST_SEEN_CHATS)...")
+    fetch_chats(is_baseline_run=True)
+    
     print("Running initial notify poll...")
     poll_once()
     
-    # [CẬP NHẬT] Đảm bảo DAILY_COUNTER_DATE được set ngay sau lần chạy đầu tiên
-    # để tránh gửi summary trống
+    # Đảm bảo DAILY_COUNTER_DATE được set ngay sau lần chạy đầu tiên
     global DAILY_COUNTER_DATE
     if not DAILY_COUNTER_DATE:
         DAILY_COUNTER_DATE = datetime.datetime.now(
@@ -437,7 +440,7 @@ async def get_curl_ui():
     <html lang="vi">
     <head>
         <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <meta name="viewport" content="width=device-width, initial-scale-1.0">
         <title>Cập nhật cURL Poller - TapHoaMMO</title>
         <style>
             @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap');
@@ -556,7 +559,7 @@ async def get_curl_ui():
                 <span id="status-body"></span>
             </div>
             
-            <p class="footer-text">TapHoaMMO Poller Service 3.1 (End-of-Day Summary)</p>
+            <p class="footer-text">TapHoaMMO Poller Service 3.2 (Bugfix + EOD)</p>
         </div>
         
         <script>
@@ -724,7 +727,10 @@ async def debug_set_curl(req: Request, secret: str):
     tg_send(msg_success)
     
     # Chạy thử 1 lần (sẽ chạy cả 2 API nếu cần và set ngày mới)
-    poll_once()
+    # [LOGIC SỬA LỖI] Chạy poll_once ngay sau khi set config SẼ GÂY LỖI
+    # vì baseline chưa được chạy. Chúng ta sẽ để poller_loop tự chạy.
+    # poll_once() # <-- Xóa dòng này
+    print("Config set. Poller loop will pick it up (hoặc chạy lần đầu nếu mới khởi động).")
     
     return {
         "ok": True,
