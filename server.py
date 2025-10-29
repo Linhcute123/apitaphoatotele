@@ -62,6 +62,8 @@ DAILY_ORDER_COUNT = defaultdict(int)
 DAILY_COUNTER_DATE = "" 
 # [THÊM MỚI] ID các tin nhắn đã xem (dùng trường 'date')
 SEEN_CHAT_DATES: set[str] = set()
+# [THÊM MỚI] Tin nhắn cuối cùng đã thấy (Key: user_id, Value: last_chat)
+LAST_SEEN_CHATS: Dict[str, str] = {}
 
 # =================== Telegram ===================
 def tg_send(text: str):
@@ -136,24 +138,25 @@ def parse_curl_command(curl_text: str) -> Dict[str, Any]:
     
     return {"url": url, "method": method, "headers": final_headers, "body_json": body_json}
 
-# =================== [THÊM MỚI] Hàm gọi API Tin nhắn ===================
+# =================== [CẬP NHẬT] Hàm gọi API Tin nhắn ===================
 def fetch_chats() -> List[Dict[str, str]]:
     """
     Gọi API getNewConversion và lọc ra các tin nhắn CHƯA XEM.
+    [CẬP NHẬT] Giờ đây sẽ trả về cả tin nhắn trước đó.
     """
     if not CHAT_CONFIG.get("url"):
         print("[WARN] CHAT_API_URL is not set. Skipping chat fetch.")
         return []
 
-    global SEEN_CHAT_DATES
+    global SEEN_CHAT_DATES, LAST_SEEN_CHATS
     
     try:
         if CHAT_CONFIG["method"] == "POST":
             r = requests.post(CHAT_CONFIG["url"], headers=CHAT_CONFIG["headers"], 
-                              json=CHAT_CONFIG["body_json"], verify=VERIFY_TLS, timeout=25)
+                                json=CHAT_CONFIG["body_json"], verify=VERIFY_TLS, timeout=25)
         else:
             r = requests.get(CHAT_CONFIG["url"], headers=CHAT_CONFIG["headers"], 
-                             verify=VERIFY_TLS, timeout=25)
+                               verify=VERIFY_TLS, timeout=25)
 
         data = r.json()
         if not isinstance(data, list):
@@ -162,32 +165,50 @@ def fetch_chats() -> List[Dict[str, str]]:
 
         new_messages = []
         current_chat_dates = set()
+        all_users_in_response = set() # [THÊM] Dùng để dọn dẹp
         
         # `data` là 1 list, vd: [{"guest_user": "...", "last_chat": "...", "date": "..."}]
         for chat in data:
             if not isinstance(chat, dict): continue
             
-            # Dùng 'date' làm ID duy nhất (vd: "2025-10-29T03:09:58.000+00:00")
-            # Hoặc fallback về hash(user+chat) nếu không có
+            # [THÊM] Lấy thông tin cơ bản
+            user_id = chat.get("guest_user", "N/A")
+            current_msg = chat.get("last_chat", "[không có nội dung]")
+            all_users_in_response.add(user_id)
+
+            # Dùng 'date' làm ID duy nhất
             chat_id = chat.get("date")
             if not chat_id:
-                user = chat.get("guest_user", "")
-                msg = chat.get("last_chat", "")
-                chat_id = f"{user}:{msg}"
+                chat_id = f"{user_id}:{current_msg}" # Fallback
 
             current_chat_dates.add(chat_id)
 
-            # Nếu ID này chưa thấy, và có 'newMes: 1' (hoặc cứ lấy)
-            # Dựa trên ảnh, 'newMes: 0' vẫn là tin mới.
+            # Nếu ID (date) này chưa thấy
             if chat_id not in SEEN_CHAT_DATES:
                 SEEN_CHAT_DATES.add(chat_id)
+                
+                # [THAY ĐỔI] Lấy tin nhắn trước đó từ bộ nhớ
+                previous_msg = LAST_SEEN_CHATS.get(user_id)
+                
                 new_messages.append({
-                    "user": chat.get("guest_user", "N/A"),
-                    "chat": chat.get("last_chat", "[không có nội dung]")
+                    "user": user_id,
+                    "chat": current_msg,
+                    "previous_chat": previous_msg # [THÊM]
                 })
+                
+            # [THAY ĐỔI] LUÔN cập nhật tin nhắn mới nhất vào bộ nhớ
+            # để lần sau nó trở thành "previous_msg"
+            # Kể cả khi chúng ta không gửi thông báo (vì date cũ)
+            LAST_SEEN_CHATS[user_id] = current_msg
         
         # Dọn dẹp: Xóa các ID đã cũ (phòng trường hợp list chat rút gọn)
         SEEN_CHAT_DATES.intersection_update(current_chat_dates)
+        
+        # [THÊM] Dọn dẹp LAST_SEEN_CHATS
+        # Xóa những user không còn trong API trả về (trò chuyện quá cũ)
+        for user in list(LAST_SEEN_CHATS.keys()):
+            if user not in all_users_in_response:
+                del LAST_SEEN_CHATS[user]
         
         if new_messages:
             print(f"Fetched {len(new_messages)} new chat message(s).")
@@ -215,10 +236,10 @@ def poll_once():
         # 1. GỌI API THÔNG BÁO (getNotify)
         if NOTIFY_CONFIG["method"] == "POST":
             r = requests.post(NOTIFY_CONFIG["url"], headers=NOTIFY_CONFIG["headers"], 
-                              json=NOTIFY_CONFIG["body_json"], verify=VERIFY_TLS, timeout=25)
+                                json=NOTIFY_CONFIG["body_json"], verify=VERIFY_TLS, timeout=25)
         else:
             r = requests.get(NOTIFY_CONFIG["url"], headers=NOTIFY_CONFIG["headers"], 
-                             verify=VERIFY_TLS, timeout=25)
+                               verify=VERIFY_TLS, timeout=25)
 
         text = (r.text or "").strip()
         if not text:
@@ -294,8 +315,15 @@ def poll_once():
                 for chat in fetched_messages:
                     user = html.escape(chat.get("user", "N/A"))
                     msg = html.escape(chat.get("chat", "..."))
-                    # Thêm định dạng "siêu chuyên nghiệp"
-                    new_chat_messages.append(f"    ✉️ <b>{user}</b>: <i>{msg}</i>")
+                    prev_msg = html.escape(chat.get("previous_chat") or "") # [THÊM MỚI]
+
+                    # [THAY ĐỔI] Thêm định dạng "siêu chuyên nghiệp" với tin nhắn cũ
+                    if prev_msg and prev_msg != msg: # Chỉ hiện thị nếu có tin cũ VÀ nó khác tin mới
+                        new_chat_messages.append(f"  👤 <b>{user} (trước đó)</b>: <i>{prev_msg}</i>")
+                        new_chat_messages.append(f"  ✉️ <b>{user} (mới)</b>: <b>{msg}</b>") # In đậm tin mới
+                    else:
+                        # Nếu không có tin cũ (lần đầu chat), giữ như cũ
+                        new_chat_messages.append(f"  ✉️ <b>{user}</b>: <b>{msg}</b>") # In đậm tin mới
 
             # 5. GỬI THÔNG BÁO TỔNG HỢP
             if has_new_notification:
@@ -611,6 +639,7 @@ async def debug_set_curl(req: Request, secret: str):
     # Ghi đè cấu hình runtime toàn cục
     global NOTIFY_CONFIG, CHAT_CONFIG
     global LAST_NOTIFY_NUMS, DAILY_ORDER_COUNT, DAILY_COUNTER_DATE, SEEN_CHAT_DATES
+    global LAST_SEEN_CHATS # [THÊM]
     
     NOTIFY_CONFIG = parsed_notify
     CHAT_CONFIG = parsed_chat
@@ -620,6 +649,7 @@ async def debug_set_curl(req: Request, secret: str):
     DAILY_ORDER_COUNT.clear()
     DAILY_COUNTER_DATE = "" 
     SEEN_CHAT_DATES.clear()
+    LAST_SEEN_CHATS.clear() # [THÊM MỚI]
     
     print("--- CONFIG UPDATED BY UI ---")
     print(f"Notify API set to: {NOTIFY_CONFIG.get('url')}")
