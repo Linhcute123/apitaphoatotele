@@ -33,7 +33,7 @@ POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "12"))
 VERIFY_TLS    = bool(int(os.getenv("VERIFY_TLS", "1")))
 DISABLE_POLLER = os.getenv("DISABLE_POLLER", "0") == "1"
 
-# [CẬP NHẬT] Cấu hình runtime (thêm body_data)
+# Cấu hình runtime (thêm body_data)
 try:
     NOTIFY_CONFIG = {
         "url": NOTIFY_API_URL, "method": NOTIFY_API_METHOD,
@@ -82,8 +82,11 @@ def tg_send(text: str):
             print("Telegram error:", r.status_code, r.text)
             break
 
-# Hàm gửi tổng kết cuối ngày
+# Hàm gửi tổng kết cuối ngày (đã bỏ footer)
 def send_daily_summary(date_str: str, counts: defaultdict):
+    """
+    Gửi báo cáo tổng kết của ngày đã qua.
+    """
     if not counts:
         print(f"Skipping summary for {date_str}, no data.")
         return
@@ -109,9 +112,6 @@ def send_daily_summary(date_str: str, counts: defaultdict):
         msg_lines.append(f"🎉 <b>Tổng cộng: {total_today} đơn hàng.</b>")
     else:
         msg_lines.append("<i>Không có đơn hàng nào được ghi nhận.</i>")
-
-    msg_lines.append("\n<b>➖➖➖➖➖➖➖➖➖➖➖</b>")
-    msg_lines.append("<i>Bot được build bởi Admin Văn Linh đz ✅</i>")
     
     tg_send("\n".join(msg_lines))
     print(f"Sent daily summary for {date_str}.")
@@ -149,7 +149,7 @@ def parse_notify_text(text: str) -> Dict[str, Any]:
         return {"raw": s, "numbers": nums, "table": table}
     return {"raw": s}
 
-# [CẬP NHẬT] Hàm Parse cURL (hỗ trợ data-raw)
+# Hàm Parse cURL (hỗ trợ data-raw)
 def parse_curl_command(curl_text: str) -> Dict[str, Any]:
     args = shlex.split(curl_text)
     method = "GET"; headers = {}; data = None; url = ""
@@ -176,7 +176,6 @@ def parse_curl_command(curl_text: str) -> Dict[str, Any]:
 
     if not final_headers and headers: final_headers = headers
     
-    # [CẬP NHẬT] Lưu trữ cả json và data
     body_json = None
     raw_data = None 
     
@@ -185,15 +184,15 @@ def parse_curl_command(curl_text: str) -> Dict[str, Any]:
             body_json = json.loads(data)
         except Exception: 
             print(f"cURL body is not valid JSON, storing as raw text.")
-            raw_data = data # Lưu dưới dạng chuỗi thô
+            raw_data = data
     
     return {
         "url": url, "method": method, "headers": final_headers, 
         "body_json": body_json, 
-        "body_data": raw_data  # Thêm trường mới
+        "body_data": raw_data
     }
 
-# [THÊM MỚI] Hàm gửi request chung
+# Hàm gửi request chung
 def _make_api_request(config: Dict[str, Any]) -> requests.Response:
     """Gửi request dựa trên config, tự động chọn json hoặc data."""
     method = config.get("method", "GET")
@@ -210,16 +209,14 @@ def _make_api_request(config: Dict[str, Any]) -> requests.Response:
     
     if method == "POST":
         if body_json is not None:
-            # Gửi dưới dạng JSON
             kwargs["json"] = body_json
         elif body_data is not None:
-            # Gửi dưới dạng x-www-form-urlencoded
             kwargs["data"] = body_data.encode('utf-8')
     
     return requests.request(method, url, **kwargs)
 
 
-# [CẬP NHẬT] Hàm gọi API Tin nhắn (sửa lỗi JSON và dùng hàm request mới)
+# Hàm gọi API Tin nhắn (sửa lỗi JSON và dùng hàm request mới)
 def fetch_chats(is_baseline_run: bool = False) -> List[Dict[str, str]]:
     if not CHAT_CONFIG.get("url"):
         print("[WARN] CHAT_API_URL is not set. Skipping chat fetch.")
@@ -228,10 +225,8 @@ def fetch_chats(is_baseline_run: bool = False) -> List[Dict[str, str]]:
     global SEEN_CHAT_DATES, LAST_SEEN_CHATS
     
     try:
-        # [CẬP NHẬT] Dùng hàm request mới
         r = _make_api_request(CHAT_CONFIG)
 
-        # [FIX LỖI ẢNH 3] Đảm bảo phản hồi là JSON hợp lệ
         try:
             data = r.json()
         except requests.exceptions.JSONDecodeError:
@@ -270,9 +265,10 @@ def fetch_chats(is_baseline_run: bool = False) -> List[Dict[str, str]]:
                     new_messages.append({
                         "user": user_id,
                         "chat": current_msg,
-                        "previous_chat": previous_msg
+                        "previous_chat": previous_msg # Vẫn lấy để logic hoạt động
                     })
             
+            # Luôn cập nhật tin nhắn cuối cùng vào bộ nhớ
             LAST_SEEN_CHATS[user_id] = current_msg
         
         if not is_baseline_run:
@@ -297,7 +293,7 @@ def fetch_chats(is_baseline_run: bool = False) -> List[Dict[str, str]]:
             tg_send(f"⚠️ <b>Lỗi không mong muốn API Chat:</b>\n<code>{html.escape(str(e))}</code>")
         return []
 
-# [CẬP NHẬT] Hàm Poller (dùng hàm request mới)
+# [CẬP NHẬT] Hàm Poller (chỉ hiển thị tin nhắn mới nhất)
 def poll_once():
     global LAST_NOTIFY_NUMS, DAILY_ORDER_COUNT, DAILY_COUNTER_DATE 
 
@@ -307,7 +303,6 @@ def poll_once():
 
     try:
         # 1. GỌI API THÔNG BÁO (getNotify)
-        # [CẬP NHẬT] Dùng hàm request mới
         r = _make_api_request(NOTIFY_CONFIG)
 
         text = (r.text or "").strip()
@@ -328,7 +323,7 @@ def poll_once():
         if "numbers" in parsed:
             now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=7)))
             today_str = now.strftime("%Y-%m-%d")
-            time_str = now.strftime("%H:%M:%S")
+            # time_str = now.strftime("%H:%M:%S") # Bị vô hiệu hóa
 
             # GỬI TỔNG KẾT NẾU SANG NGÀY MỚI
             if today_str != DAILY_COUNTER_DATE:
@@ -377,14 +372,10 @@ def poll_once():
                 for chat in fetched_messages:
                     user = html.escape(chat.get("user", "N/A"))
                     msg = html.escape(chat.get("chat", "..."))
-                    prev_msg = html.escape(chat.get("previous_chat") or "")
+                    # prev_msg is no longer used for display
 
                     new_chat_messages.append(f"<b>--- Tin nhắn từ: {user} ---</b>")
-                    if prev_msg and prev_msg != msg:
-                        new_chat_messages.append(f"  <i>Lần trước: {prev_msg}</i>")
-                        new_chat_messages.append(f"  <b>Bây giờ: {msg}</b>")
-                    else:
-                        new_chat_messages.append(f"  <b>Nội dung: {msg}</b>")
+                    new_chat_messages.append(f"  <b>Nội dung: {msg}</b>") # [CẬP NHẬT] Chỉ hiển thị tin nhắn mới nhất
 
 
             # 5. GỬI THÔNG BÁO TỨC THỜI
@@ -402,8 +393,7 @@ def poll_once():
                     instant_alert_lines.append(remaining_line)
                 
                 msg_lines = [
-                    f"<b>⭐ BÁO CÁO NHANH - TAPHOAMMO</b>",
-                    f"<i>(Lúc {time_str} - Ngày {today_str})</i>"
+                    f"<b>⭐ BÁO CÁO NHANH - TAPHOAMMO</b>"
                 ]
 
                 if new_chat_messages:
@@ -416,9 +406,6 @@ def poll_once():
                     msg_lines.append("<b>🔔 CẬP NHẬT TRẠNG THÁI:</b>")
                     msg_lines.extend(instant_alert_lines)
                 
-                msg_lines.append("\n<b>➖➖➖➖➖➖➖➖➖➖➖</b>")
-                msg_lines.append("<i>Bot được build bởi Admin Văn Linh đz ✅</i>")
-
                 msg = "\n".join(msg_lines)
                 tg_send(msg)
                 print("getNotify changes (INCREASE) -> Professional Telegram sent.")
@@ -430,20 +417,33 @@ def poll_once():
         
         else:
             if text != str(LAST_NOTIFY_NUMS):
-                msg = f"🔔 <b>TapHoaMMO getNotify (lỗi)</b>\n<code>{html.escape(text)}</code>\n\n<b>➖➖➖➖➖➖➖➖➖➖➖</b>\n<i>Bot được build bởi Admin Văn Linh đz ✅</i>"
+                msg = f"🔔 <b>TapHoaMMO getNotify (lỗi)</b>\n<code>{html.escape(text)}</code>"
                 tg_send(msg)
                 print("getNotify (non-numeric) changed -> Telegram sent.")
 
     except requests.exceptions.RequestException as e:
         print(f"poll_once network error: {e}")
-        tg_send(f"⚠️ <b>Lỗi Mạng API Notify:</b> Không thể kết nối hoặc phản hồi.\n<code>{html.escape(str(e))}</code>\n\n<b>➖➖➖➖➖➖➖➖➖➖➖</b>\n<i>Bot được build bởi Admin Văn Linh đz ✅</i>")
+        tg_send(f"⚠️ <b>Lỗi Mạng API Notify:</b> Không thể kết nối hoặc phản hồi.\n<code>{html.escape(str(e))}</code>")
     except Exception as e:
         print(f"poll_once unexpected error: {e}")
-        tg_send(f"⚠️ <b>Lỗi không mong muốn API Notify:</b>\n<code>{html.escape(str(e))}</code>\n\n<b>➖➖➖➖➖➖➖➖➖➖➖</b>\n<i>Bot được build bởi Admin Văn Linh đz ✅</i>")
+        tg_send(f"⚠️ <b>Lỗi không mong muốn API Notify:</b>\n<code>{html.escape(str(e))}</code>")
 
-# Vòng lặp Poller
+# Vòng lặp Poller (thêm thông báo khởi động)
 def poller_loop():
     print("▶ Poller started (Dual-API Mode)")
+    
+    try:
+        now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=7)))
+        time_str = now.strftime("%H:%M:%S")
+        date_str = now.strftime("%Y-%m-%d")
+        tg_send(
+            f"✅ <b>Bot đã khởi động!</b>\n"
+            f"<i>(Lúc {time_str} - Ngày {date_str})</i>\n"
+            f"Bắt đầu theo dõi TapHoaMMO..."
+        )
+    except Exception as e:
+        print(f"Failed to send startup message: {e}")
+        
     print("Running initial chat fetch to set baseline (LAST_SEEN_CHATS)...")
     fetch_chats(is_baseline_run=True)
     
@@ -589,7 +589,7 @@ async def get_curl_ui():
                 <span id="status-body"></span>
             </div>
             
-            <p class="footer-text">TapHoaMMO Poller Service 3.4 (data-raw fix)</p>
+            <p class="footer-text">TapHoaMMO Poller Service 3.6 (Single Message)</p>
         </div>
         
         <script>
@@ -677,7 +677,7 @@ def debug_notify(secret: str):
         "daily_stats": DAILY_ORDER_COUNT
     }
 
-# [CẬP NHẬT] Endpoint set-curl (đã đổi format)
+# [CẬP NHẬT] Endpoint set-curl (đã bỏ footer)
 @app.post("/debug/set-curl")
 async def debug_set_curl(req: Request, secret: str):
     if secret != WEBHOOK_SECRET:
@@ -691,7 +691,7 @@ async def debug_set_curl(req: Request, secret: str):
     if not curl_notify_txt or not curl_chat_txt:
         msg = (
             "❌ <b>CẬP NHẬT CẤU HÌNH THẤT BẠI</b>\n"
-            "Lý do: Một trong hai ô cURL bị bỏ trống.\n\n<b>➖➖➖➖➖➖➖➖➖➖➖</b>\n<i>Bot được build bởi Admin Văn Linh đz ✅</i>"
+            "Lý do: Một trong hai ô cURL bị bỏ trống."
         )
         tg_send(msg)
         raise HTTPException(status_code=400, detail="curl_notify and curl_chat are required.")
@@ -707,7 +707,7 @@ async def debug_set_curl(req: Request, secret: str):
         msg = (
             "❌ <b>CẬP NHẬT CẤU HÌNH THẤT BẠI</b>\n"
             f"Lý do: Lỗi nghiêm trọng khi phân tích cURL.\n"
-            f"<code>{html.escape(str(e))}</code>\n\n<b>➖➖➖➖➖➖➖➖➖➖➖</b>\n<i>Bot được build bởi Admin Văn Linh đz ✅</i>"
+            f"<code>{html.escape(str(e))}</code>"
         )
         tg_send(msg)
         raise HTTPException(status_code=500, detail=f"Parsing error: {e}")
@@ -723,22 +723,18 @@ async def debug_set_curl(req: Request, secret: str):
         if not chat_url_ok:
             error_lines.append("<b>- API Chat:</b> Thất bại (Kiểm tra lại cURL 2)")
         
-        error_lines.append("\n<b>➖➖➖➖➖➖➖➖➖➖➖</b>")
-        error_lines.append("<i>Bot được build bởi Admin Văn Linh đz ✅</i>")
         msg_fail = "\n".join(error_lines)
         tg_send(msg_fail)
         
         raise HTTPException(status_code=400, detail="Một hoặc cả hai cURL không hợp lệ. Không tìm thấy URL.")
 
-    # --- [SỬA LỖI] Kiểm tra nhầm lẫn URL ---
+    # --- Kiểm tra nhầm lẫn URL ---
     if "getNewConversion" in parsed_notify.get("url", ""):
         error_lines = [
             "❌ <b>CẬP NHẬT CẤU HÌNH THẤT BẠI</b>\n"
             "Lý do: <b>Bạn đã dán nhầm URL!</b>\n"
             "Ô <b>Notify</b> đang chứa link <b>getNewConversion</b>."
         ]
-        error_lines.append("\n<b>➖➖➖➖➖➖➖➖➖➖➖</b>")
-        error_lines.append("<i>Bot được build bởi Admin Văn Linh đz ✅</i>")
         tg_send("\n".join(error_lines))
         raise HTTPException(status_code=400, detail="URL Mismatch: Notify cURL contains getNewConversion.")
         
@@ -748,8 +744,6 @@ async def debug_set_curl(req: Request, secret: str):
             "Lý do: <b>Bạn đã dán nhầm URL!</b>\n"
             "Ô <b>Chat</b> đang chứa link <b>getNotify</b>."
         ]
-        error_lines.append("\n<b>➖➖➖➖➖➖➖➖➖➖➖</b>")
-        error_lines.append("<i>Bot được build bởi Admin Văn Linh đz ✅</i>")
         tg_send("\n".join(error_lines))
         raise HTTPException(status_code=400, detail="URL Mismatch: Chat cURL contains getNotify.")
 
@@ -777,9 +771,7 @@ async def debug_set_curl(req: Request, secret: str):
         "✅ <b>CẬP NHẬT CẤU HÌNH THÀNH CÔNG (TAPHOAMMO)</b>\n"
         "Đã áp dụng cài đặt mới cho cả 2 API.\n\n"
         f"<b>API Notify:</b> <code>{html.escape(NOTIFY_CONFIG.get('url'))}</code>\n"
-        f"<b>API Chat:</b> <code>{html.escape(CHAT_CONFIG.get('url'))}</code>\n"
-        "\n<b>➖➖➖➖➖➖➖➖➖➖➖</b>\n"
-        "<i>Bot được build bởi Admin Văn Linh đz ✅</i>"
+        f"<b>API Chat:</b> <code>{html.escape(CHAT_CONFIG.get('url'))}</code>"
     )
     tg_send(msg_success)
     
