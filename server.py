@@ -39,7 +39,7 @@ try:
         "url": NOTIFY_API_URL, "method": NOTIFY_API_METHOD,
         "headers": json.loads(NOTIFY_HEADERS_ENV),
         "body_json": json.loads(NOTIFY_BODY_JSON_ENV) if NOTIFY_BODY_JSON_ENV else None,
-        "body_data": None # Sẽ được điền bởi cURL
+        "body_data": None
     }
 except Exception:
     NOTIFY_CONFIG = {"url": "", "method": "GET", "headers": {}, "body_json": None, "body_data": None}
@@ -49,7 +49,7 @@ try:
         "url": CHAT_API_URL, "method": CHAT_API_METHOD,
         "headers": json.loads(CHAT_HEADERS_ENV),
         "body_json": json.loads(CHAT_BODY_JSON_ENV) if CHAT_BODY_JSON_ENV else None,
-        "body_data": None # Sẽ được điền bởi cURL
+        "body_data": None
     }
 except Exception:
     CHAT_CONFIG = {"url": "", "method": "GET", "headers": {}, "body_json": None, "body_data": None}
@@ -59,8 +59,9 @@ except Exception:
 app = FastAPI(title="TapHoaMMO → Telegram (Dual-API Poller)")
 
 LAST_NOTIFY_NUMS: List[int] = []     
-DAILY_ORDER_COUNT = defaultdict(int) 
-DAILY_COUNTER_DATE = "" 
+# [XÓA] DAILY_ORDER_COUNT và DAILY_COUNTER_DATE không còn cần thiết nữa
+# DAILY_ORDER_COUNT = defaultdict(int)
+# DAILY_COUNTER_DATE = ""
 SEEN_CHAT_DATES: set[str] = set()
 LAST_SEEN_CHATS: Dict[str, str] = {} # Key: user_id, Value: last_chat
 
@@ -82,40 +83,9 @@ def tg_send(text: str):
             print("Telegram error:", r.status_code, r.text)
             break
 
-# Hàm gửi tổng kết cuối ngày (đã bỏ footer)
-def send_daily_summary(date_str: str, counts: defaultdict):
-    """
-    Gửi báo cáo tổng kết của ngày đã qua.
-    """
-    if not counts:
-        print(f"Skipping summary for {date_str}, no data.")
-        return
-
-    msg_lines = [
-        f"<b>🗓️ TỔNG KẾT NGÀY {date_str}</b>",
-        "===================="
-    ]
-    
-    total_today = 0
-    product_total = counts.get("Đơn hàng sản phẩm", 0)
-    service_total = counts.get("Đơn hàng dịch vụ", 0)
-    
-    if product_total > 0:
-        msg_lines.append(f"  📦 Đơn hàng sản phẩm: <b>{product_total}</b>")
-        total_today += product_total
-    if service_total > 0:
-        msg_lines.append(f"  🛎️ Đơn hàng dịch vụ: <b>{service_total}</b>")
-        total_today += service_total
-    
-    if total_today > 0:
-        msg_lines.append("--------------------")
-        msg_lines.append(f"🎉 <b>Tổng cộng: {total_today} đơn hàng.</b>")
-    else:
-        msg_lines.append("<i>Không có đơn hàng nào được ghi nhận.</i>")
-    
-    tg_send("\n".join(msg_lines))
-    print(f"Sent daily summary for {date_str}.")
-
+# [XÓA] Hàm send_daily_summary không còn cần thiết nữa
+# def send_daily_summary(date_str: str, counts: defaultdict):
+#     ...
 
 # =================== Helpers ===================
 def _get_icon_for_label(label: str) -> str:
@@ -216,7 +186,7 @@ def _make_api_request(config: Dict[str, Any]) -> requests.Response:
     return requests.request(method, url, **kwargs)
 
 
-# Hàm gọi API Tin nhắn (sửa lỗi JSON và dùng hàm request mới)
+# Hàm gọi API Tin nhắn
 def fetch_chats(is_baseline_run: bool = False) -> List[Dict[str, str]]:
     if not CHAT_CONFIG.get("url"):
         print("[WARN] CHAT_API_URL is not set. Skipping chat fetch.")
@@ -265,10 +235,9 @@ def fetch_chats(is_baseline_run: bool = False) -> List[Dict[str, str]]:
                     new_messages.append({
                         "user": user_id,
                         "chat": current_msg,
-                        "previous_chat": previous_msg # Vẫn lấy để logic hoạt động
+                        "previous_chat": previous_msg
                     })
             
-            # Luôn cập nhật tin nhắn cuối cùng vào bộ nhớ
             LAST_SEEN_CHATS[user_id] = current_msg
         
         if not is_baseline_run:
@@ -293,9 +262,10 @@ def fetch_chats(is_baseline_run: bool = False) -> List[Dict[str, str]]:
             tg_send(f"⚠️ <b>Lỗi không mong muốn API Chat:</b>\n<code>{html.escape(str(e))}</code>")
         return []
 
-# [CẬP NHẬT] Hàm Poller (chỉ hiển thị tin nhắn mới nhất)
+# [CẬP NHẬT] Hàm Poller (đã bỏ logic tổng kết cuối ngày)
 def poll_once():
-    global LAST_NOTIFY_NUMS, DAILY_ORDER_COUNT, DAILY_COUNTER_DATE 
+    global LAST_NOTIFY_NUMS
+    # [XÓA] DAILY_ORDER_COUNT và DAILY_COUNTER_DATE không còn cần thiết nữa
 
     if not NOTIFY_CONFIG.get("url"):
         print("No NOTIFY_API_URL set")
@@ -321,18 +291,10 @@ def poll_once():
         parsed = parse_notify_text(text)
         
         if "numbers" in parsed:
-            now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=7)))
-            today_str = now.strftime("%Y-%m-%d")
-            # time_str = now.strftime("%H:%M:%S") # Bị vô hiệu hóa
-
-            # GỬI TỔNG KẾT NẾU SANG NGÀY MỚI
-            if today_str != DAILY_COUNTER_DATE:
-                if DAILY_COUNTER_DATE:
-                    print(f"New day detected ({today_str}). Sending summary for {DAILY_COUNTER_DATE}...")
-                    send_daily_summary(DAILY_COUNTER_DATE, DAILY_ORDER_COUNT)
-                
-                DAILY_COUNTER_DATE = today_str
-                DAILY_ORDER_COUNT.clear()
+            # [XÓA] Logic kiểm tra ngày mới và gọi send_daily_summary đã bị xóa
+            # now = datetime.datetime.now(...)
+            # today_str = now.strftime(...)
+            # if today_str != DAILY_COUNTER_DATE: ...
             
             current_nums = parsed["numbers"]
             if len(current_nums) != len(LAST_NOTIFY_NUMS):
@@ -352,10 +314,8 @@ def poll_once():
                 if current_val > last_val:
                     has_new_notification = True
                     
-                    if "đơn hàng sản phẩm" in label.lower():
-                        DAILY_ORDER_COUNT[label] += (current_val - last_val)
-                    elif "đơn hàng dịch vụ" in label.lower():
-                        DAILY_ORDER_COUNT[label] += (current_val - last_val)
+                    # [XÓA] Logic cộng dồn DAILY_ORDER_COUNT đã bị xóa
+                    # if "đơn hàng sản phẩm" in label.lower(): ...
                     
                     if "tin nhắn" in label.lower():
                         has_new_chat = True
@@ -375,7 +335,7 @@ def poll_once():
                     # prev_msg is no longer used for display
 
                     new_chat_messages.append(f"<b>--- Tin nhắn từ: {user} ---</b>")
-                    new_chat_messages.append(f"  <b>Nội dung: {msg}</b>") # [CẬP NHẬT] Chỉ hiển thị tin nhắn mới nhất
+                    new_chat_messages.append(f"  <b>Nội dung: {msg}</b>")
 
 
             # 5. GỬI THÔNG BÁO TỨC THỜI
@@ -428,7 +388,7 @@ def poll_once():
         print(f"poll_once unexpected error: {e}")
         tg_send(f"⚠️ <b>Lỗi không mong muốn API Notify:</b>\n<code>{html.escape(str(e))}</code>")
 
-# Vòng lặp Poller (thêm thông báo khởi động)
+# [CẬP NHẬT] Vòng lặp Poller (đã bỏ logic set DAILY_COUNTER_DATE)
 def poller_loop():
     print("▶ Poller started (Dual-API Mode)")
     
@@ -450,12 +410,9 @@ def poller_loop():
     print("Running initial notify poll...")
     poll_once()
     
-    global DAILY_COUNTER_DATE
-    if not DAILY_COUNTER_DATE:
-        DAILY_COUNTER_DATE = datetime.datetime.now(
-            datetime.timezone(datetime.timedelta(hours=7))
-        ).strftime("%Y-%m-%d")
-        print(f"Baseline date set to: {DAILY_COUNTER_DATE}")
+    # [XÓA] Logic set DAILY_COUNTER_DATE không còn cần thiết
+    # global DAILY_COUNTER_DATE
+    # if not DAILY_COUNTER_DATE: ...
     
     while True:
         time.sleep(POLL_INTERVAL)
@@ -589,7 +546,7 @@ async def get_curl_ui():
                 <span id="status-body"></span>
             </div>
             
-            <p class="footer-text">TapHoaMMO Poller Service 3.6 (Single Message)</p>
+            <p class="footer-text">TapHoaMMO Poller Service 3.8 (No EOD Summary)</p>
         </div>
         
         <script>
@@ -656,10 +613,11 @@ async def get_curl_ui():
 
 @app.get("/healthz")
 def health():
+    # [XÓA] DAILY_ORDER_COUNT và DAILY_COUNTER_DATE không còn cần thiết
     return {
         "ok": True, "poller": not DISABLE_POLLER,
         "last_notify_nums": LAST_NOTIFY_NUMS,
-        "daily_stats": {"date": DAILY_COUNTER_DATE, "counts": DAILY_ORDER_COUNT},
+        # "daily_stats": {"date": DAILY_COUNTER_DATE, "counts": DAILY_ORDER_COUNT},
         "seen_chats": len(SEEN_CHAT_DATES),
         "api_notify": {"url": NOTIFY_CONFIG.get("url"), "data": NOTIFY_CONFIG.get("body_data") is not None},
         "api_chat": {"url": CHAT_CONFIG.get("url"), "data": CHAT_CONFIG.get("body_data") is not None}
@@ -672,12 +630,13 @@ def debug_notify(secret: str):
     before = str(LAST_NOTIFY_NUMS) 
     poll_once()
     after = str(LAST_NOTIFY_NUMS)
+    # [XÓA] DAILY_ORDER_COUNT không còn cần thiết
     return {
         "ok": True, "last_before": before, "last_after": after,
-        "daily_stats": DAILY_ORDER_COUNT
+        # "daily_stats": DAILY_ORDER_COUNT
     }
 
-# [CẬP NHẬT] Endpoint set-curl (đã bỏ footer)
+# Endpoint set-curl (đã bỏ 2 dòng URL trong thông báo thành công)
 @app.post("/debug/set-curl")
 async def debug_set_curl(req: Request, secret: str):
     if secret != WEBHOOK_SECRET:
@@ -749,16 +708,17 @@ async def debug_set_curl(req: Request, secret: str):
 
     # --- Trường hợp thành công ---
     global NOTIFY_CONFIG, CHAT_CONFIG
-    global LAST_NOTIFY_NUMS, DAILY_ORDER_COUNT, DAILY_COUNTER_DATE, SEEN_CHAT_DATES
-    global LAST_SEEN_CHATS
+    global LAST_NOTIFY_NUMS, SEEN_CHAT_DATES, LAST_SEEN_CHATS
+    # [XÓA] DAILY_ORDER_COUNT và DAILY_COUNTER_DATE không còn cần thiết
     
     NOTIFY_CONFIG = parsed_notify
     CHAT_CONFIG = parsed_chat
 
     # Reset lại toàn bộ
     LAST_NOTIFY_NUMS = []
-    DAILY_ORDER_COUNT.clear()
-    DAILY_COUNTER_DATE = "" 
+    # [XÓA] DAILY_ORDER_COUNT và DAILY_COUNTER_DATE không còn cần thiết
+    # DAILY_ORDER_COUNT.clear()
+    # DAILY_COUNTER_DATE = "" 
     SEEN_CHAT_DATES.clear()
     LAST_SEEN_CHATS.clear()
     
@@ -766,16 +726,14 @@ async def debug_set_curl(req: Request, secret: str):
     print(f"Notify API set to: {NOTIFY_CONFIG.get('url')}")
     print(f"Chat API set to: {CHAT_CONFIG.get('url')}")
     
-    # Gửi thông báo thành công
+    # Gửi thông báo thành công (đã bỏ 2 dòng URL)
     msg_success = (
         "✅ <b>CẬP NHẬT CẤU HÌNH THÀNH CÔNG (TAPHOAMMO)</b>\n"
-        "Đã áp dụng cài đặt mới cho cả 2 API.\n\n"
-        f"<b>API Notify:</b> <code>{html.escape(NOTIFY_CONFIG.get('url'))}</code>\n"
-        f"<b>API Chat:</b> <code>{html.escape(CHAT_CONFIG.get('url'))}</code>"
+        "Đã áp dụng cài đặt mới cho cả 2 API."
     )
     tg_send(msg_success)
     
-    print("Config set. Poller loop will pick it up (hoặc chạy lần đầu nếu mới khởi động).")
+    print("Config set. Poller loop will pick it up.")
     
     return {
         "ok": True,
