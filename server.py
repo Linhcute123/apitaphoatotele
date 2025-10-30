@@ -114,6 +114,7 @@ GREETING_MESSAGES = [
 ]
 
 # =================== Telegram ===================
+# [CẬP NHẬT] tg_send để thêm "cache buster"
 def tg_send(text: str, photo_url: Optional[str] = None):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("[WARN] Missing TELEGRAM_* env")
@@ -123,7 +124,14 @@ def tg_send(text: str, photo_url: Optional[str] = None):
     payload = {}
     
     if photo_url:
-        # Gửi ảnh kèm caption (chú thích)
+        # [CẬP NHẬT v5.1] Thêm "cache buster" (tham số _t) để làm mới link random
+        # Đảm bảo Telegram luôn tải ảnh mới
+        cache_buster = f"_t={int(time.time())}"
+        if "?" in photo_url:
+            final_photo_url = f"{photo_url}&{cache_buster}"
+        else:
+            final_photo_url = f"{photo_url}?{cache_buster}"
+            
         api_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         caption = text
         if len(caption) > 1024: # Giới hạn caption của Telegram
@@ -131,7 +139,7 @@ def tg_send(text: str, photo_url: Optional[str] = None):
         
         payload = {
             "chat_id": TELEGRAM_CHAT_ID,
-            "photo": photo_url,
+            "photo": final_photo_url, # Sử dụng link đã thêm cache buster
             "caption": caption,
             "parse_mode": "HTML"
         }
@@ -140,12 +148,11 @@ def tg_send(text: str, photo_url: Optional[str] = None):
             r = requests.post(api_url, json=payload, timeout=30)
             if r.status_code >= 400:
                 print(f"Telegram photo error: {r.status_code} {r.text}")
-                # [Dự phòng] Nếu gửi ảnh lỗi (ví dụ link ảnh hỏng), gửi text
-                tg_send(text, photo_url=None) # Chỉ gửi text
-            return # Đã gửi (hoặc đã thử gửi)
+                tg_send(text, photo_url=None) # Gửi text dự phòng
+            return
         except Exception as e:
             print(f"Error sending photo: {e}")
-            tg_send(text, photo_url=None) # Gửi text nếu có lỗi
+            tg_send(text, photo_url=None) # Gửi text dự phòng
             return
 
     # Gửi text (chia nhỏ nếu quá dài)
@@ -165,23 +172,20 @@ def tg_send(text: str, photo_url: Optional[str] = None):
             print(f"Telegram text error: {r_text.status_code} {r_text.text}")
             break
 
-# Hàm gửi lời chúc 0h (lấy link và lời chúc ngẫu nhiên)
+# Hàm gửi lời chúc 0h
 def send_good_morning_message(old_date: str, counts: defaultdict):
     """
     Gửi lời chúc mừng ngày mới kèm tổng kết ngày cũ và ảnh.
     """
     print(f"Sending Good Morning message for end of day {old_date}...")
     
-    # Tính tổng đơn ngày cũ
     product_total = counts.get("Đơn hàng sản phẩm", 0)
     service_total = counts.get("Đơn hàng dịch vụ", 0)
     total_orders = product_total + service_total
 
-    # Lấy lời chúc ngẫu nhiên
     msg_template = random.choice(GREETING_MESSAGES)
     msg = msg_template.format(date=old_date, orders=total_orders)
     
-    # Lấy ảnh ngẫu nhiên từ danh sách (ưu tiên danh sách tùy chỉnh)
     photo = None
     links_to_use = GREETING_IMAGE_LINKS if GREETING_IMAGE_LINKS else DEFAULT_IMAGE_LINKS
     if links_to_use:
@@ -399,7 +403,6 @@ def poll_once():
 
             # GỬI LỜI CHÚC NẾU SANG NGÀY MỚI
             if today_str != DAILY_COUNTER_DATE:
-                # Chỉ gửi nếu ĐÃ BẬT và không phải lần chạy đầu tiên
                 if DAILY_COUNTER_DATE and GREETING_ENABLED:
                     print(f"New day detected ({today_str}). Sending good morning message for {DAILY_COUNTER_DATE}...")
                     send_good_morning_message(DAILY_COUNTER_DATE, DAILY_ORDER_COUNT)
@@ -669,7 +672,7 @@ async def get_curl_ui():
     <body>
         <div class="container">
             <div class="card">
-                <h1><span>⚙️</span>Trình Cập Nhật Poller (v5.0)</h1>
+                <h1><span>⚙️</span>Trình Cập Nhật Poller (v5.1)</h1>
                 <p class="description">Dán cURL và cấu hình lời chúc 0h tại đây.</p>
                 
                 <form id="config-form">
@@ -715,7 +718,7 @@ async def get_curl_ui():
                 </div>
             </div>
             
-            <p class="footer-text">TapHoaMMO Poller Service 5.0 (Full Config)</p>
+            <p class="footer-text">TapHoaMMO Poller Service 5.1 (Cache Fix)</p>
         </div>
         
         <script>
