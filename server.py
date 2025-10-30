@@ -23,11 +23,8 @@ DISABLE_POLLER = os.getenv("DISABLE_POLLER", "0") == "1"
 
 # [CẬP NHẬT v5.3] Cấu hình runtime được gom vào 1 chỗ
 DEFAULT_IMAGE_LINKS = [
-    "https://i.imgur.com/g6m3l08.jpeg",
-    "https://i.imgur.com/L1b6iQZ.jpeg",
-    "https://i.imgur.com/Uf7bS3T.jpeg",
-    "https://i.imgur.com/0PViC3S.jpeg",
-    "https://i.imgur.com/7gK10sL.jpeg"
+    "Nhập đường link ảnh vào đây"
+ 
 ]
 DEFAULT_GREETING_MESSAGES = [
     (
@@ -70,13 +67,10 @@ DEFAULT_GREETING_MESSAGES = [
 
 # Biến toàn cục chứa TOÀN BỘ cấu hình (sẽ được backup/restore)
 GLOBAL_CONFIG = {
-    # Cấu hình cURL giả lập khi mới khởi động
     "notify_curl": "",
     "chat_curl": "",
-    # Cấu hình API thực tế
     "notify_api": {"url": "", "method": "GET", "headers": {}, "body_json": None, "body_data": None},
     "chat_api": {"url": "", "method": "GET", "headers": {}, "body_json": None, "body_data": None},
-    # Cấu hình lời chúc
     "greeting_enabled": True,
     "greeting_images": list(DEFAULT_IMAGE_LINKS)
 }
@@ -376,8 +370,7 @@ def poll_once(is_baseline_run: bool = False):
             if len(current_nums) != len(LAST_NOTIFY_NUMS):
                 LAST_NOTIFY_NUMS = [0] * len(current_nums)
 
-            # [FIX v6.1] Thêm dòng bị thiếu
-            labels = _labels_for_notify(len(current_nums))
+            labels = _labels_for_notify(len(current_nums)) 
             instant_alerts_map = {}
             has_new_notification = False
             has_new_chat = False
@@ -385,7 +378,7 @@ def poll_once(is_baseline_run: bool = False):
             for i in range(len(current_nums)):
                 current_val = current_nums[i]
                 last_val = LAST_NOTIFY_NUMS[i]
-                label = labels[i] # Dòng này giờ đã an toàn
+                label = labels[i]
                 
                 if current_val > last_val:
                     has_new_notification = True
@@ -501,9 +494,50 @@ def poller_loop():
         time.sleep(POLL_INTERVAL)
         poll_once(is_baseline_run=False)
 
+# =================== [CẬP NHẬT] LÕI BACKUP/RESTORE ===================
+
+# [THÊM MỚI v6.0] Hàm logic khôi phục
+def _apply_restore(new_config_data: Dict[str, Any]) -> bool:
+    global GLOBAL_CONFIG, LAST_NOTIFY_NUMS, DAILY_ORDER_COUNT
+    global DAILY_COUNTER_DATE, SEEN_CHAT_DATES
+    
+    # --- Kiểm tra dữ liệu backup ---
+    if "notify_curl" not in new_config_data or "chat_curl" not in new_config_data:
+        tg_send(f"❌ <b>KHÔI PHỤC THẤT BẠI</b>\nDữ liệu JSON không đúng cấu trúc (thiếu cURL).")
+        raise HTTPException(status_code=400, detail="Invalid config structure.")
+    
+    try:
+        parsed_notify = parse_curl_command(new_config_data["notify_curl"])
+        parsed_chat = parse_curl_command(new_config_data["chat_curl"])
+    except Exception as e:
+        tg_send(f"❌ <b>KHÔI PHỤC THẤT BẠI</b>\nLỗi khi phân tích cURL từ file backup.\n<code>{e}</code>")
+        raise HTTPException(status_code=400, detail=f"Failed to parse cURL from backup: {e}")
+
+    # --- Áp dụng cấu hình mới ---
+    GLOBAL_CONFIG["notify_curl"] = new_config_data["notify_curl"]
+    GLOBAL_CONFIG["chat_curl"] = new_config_data["chat_curl"]
+    GLOBAL_CONFIG["notify_api"] = parsed_notify
+    GLOBAL_CONFIG["chat_api"] = parsed_chat
+    GLOBAL_CONFIG["greeting_enabled"] = new_config_data.get("greeting_enabled", True)
+    GLOBAL_CONFIG["greeting_images"] = new_config_data.get("greeting_images", list(DEFAULT_IMAGE_LINKS))
+    
+    # Reset lại toàn bộ trạng thái
+    LAST_NOTIFY_NUMS = []
+    DAILY_ORDER_COUNT.clear()
+    DAILY_COUNTER_DATE = "" 
+    SEEN_CHAT_DATES.clear()
+    
+    print("--- CONFIG RESTORED BY UI ---")
+    print(f"Notify API set to: {GLOBAL_CONFIG['notify_api'].get('url')}")
+    print(f"Chat API set to: {GLOBAL_CONFIG['chat_api'].get('url')}")
+    print(f"Greeting Enabled: {GLOBAL_CONFIG['greeting_enabled']}")
+    
+    tg_send("✅ <b>KHÔI PHỤC THÀNH CÔNG</b>\nToàn bộ cấu hình đã được khôi phục. Bot sẽ chạy lại từ đầu.")
+    return True
+
 # =================== API endpoints ===================
 
-# Giao diện web v6.0
+# [CẬP NHẬT] Giao diện web v6.0 (Giao diện VŨ TRỤ)
 @app.get("/", response_class=HTMLResponse)
 async def get_curl_ui():
     global GLOBAL_CONFIG
@@ -514,7 +548,6 @@ async def get_curl_ui():
     toggle_on_selected = "selected" if GLOBAL_CONFIG["greeting_enabled"] else ""
     toggle_off_selected = "" if GLOBAL_CONFIG["greeting_enabled"] else "selected"
 
-    # Hiển thị cURL đã lưu
     notify_curl_text = GLOBAL_CONFIG["notify_curl"]
     chat_curl_text = GLOBAL_CONFIG["chat_curl"]
 
@@ -541,23 +574,49 @@ async def get_curl_ui():
                 --shadow: 0 0 15px rgba(0, 175, 255, 0.2);
             }}
 
+            /* [THÊM MỚI v6.0] Hiệu ứng sao băng */
+            @keyframes shooting-star {{
+                0% {{ transform: translateX(100vw) translateY(-100vh); opacity: 1; }}
+                100% {{ transform: translateX(-100vw) translateY(100vh); opacity: 0; }}
+            }}
+            .star {{
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 2px;
+                height: 2px;
+                background: linear-gradient(to bottom, rgba(255,255,255,0.8), rgba(255,255,255,0));
+                border-radius: 50%;
+                box-shadow: 0 0 10px 2px #FFF;
+                opacity: 0;
+                animation: shooting-star 10s linear infinite;
+                z-index: -1;
+            }}
+            .star:nth-child(1) {{ animation-delay: 0s; left: 20%; top: -50%; animation-duration: 5s; }}
+            .star:nth-child(2) {{ animation-delay: 1.5s; left: 50%; top: -30%; animation-duration: 7s; }}
+            .star:nth-child(3) {{ animation-delay: 3s; left: 80%; top: -60%; animation-duration: 6s; }}
+            .star:nth-child(4) {{ animation-delay: 5s; left: 10%; top: -40%; animation-duration: 8s; }}
+
             body {{
                 font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
                 margin: 0; padding: 2.5rem; background: var(--bg-color);
                 color: var(--text-color); line-height: 1.6; min-height: 100vh;
                 box-sizing: border-box;
+                overflow-x: hidden; /* Ẩn thanh cuộn ngang do sao băng */
             }}
             .container {{
                 max-width: 800px; margin: 1rem auto; 
+                position: relative; /* Để UI nổi lên trên sao băng */
+                z-index: 1;
             }}
             .card {{
-                background: var(--card-bg);
+                background: rgba(26, 26, 43, 0.85); /* Hơi trong suốt */
+                backdrop-filter: blur(10px); /* Hiệu ứng mờ */
                 padding: 2.5rem 3rem; border-radius: 16px;
                 border: 1px solid transparent;
                 border-image: linear-gradient(135deg, var(--primary-glow) 0%, var(--secondary-glow) 100%) 1;
                 box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3), 0 0 25px rgba(106, 0, 255, 0.2);
                 margin-bottom: 2.5rem;
-                backdrop-filter: blur(10px);
             }}
             h1, h2 {{
                 font-weight: 700;
@@ -569,6 +628,7 @@ async def get_curl_ui():
                 background: linear-gradient(90deg, var(--primary-glow), var(--success-color));
                 -webkit-background-clip: text;
                 -webkit-text-fill-color: transparent;
+                text-shadow: 0 0 10px rgba(0, 175, 255, 0.3);
             }}
             h2 {{ 
                 font-size: 1.75rem; 
@@ -610,10 +670,7 @@ async def get_curl_ui():
                 box-shadow: 0 0 15px rgba(0, 175, 255, 0.3);
             }}
             
-            /* Giao diện File Input */
-            input[type="file"] {{
-                display: none;
-            }}
+            input[type="file"] {{ display: none; }}
             .file-upload-btn {{
                 display: block;
                 padding: 14px;
@@ -626,14 +683,8 @@ async def get_curl_ui():
                 transition: background-color 0.3s;
                 margin-top: 1rem;
             }}
-            .file-upload-btn:hover {{
-                background: var(--secondary-hover);
-            }}
-            #file-name {{
-                color: var(--text-muted);
-                font-style: italic;
-                margin-top: 0.5rem;
-            }}
+            .file-upload-btn:hover {{ background: var(--secondary-hover); }}
+            #file-name {{ color: var(--text-muted); font-style: italic; margin-top: 0.5rem; }}
 
             button {{
                 background: linear-gradient(90deg, var(--primary-glow) 0%, var(--secondary-glow) 100%);
@@ -675,13 +726,25 @@ async def get_curl_ui():
             .status-message.success strong::before {{ content: '✅  THÀNH CÔNG!'; }}
             .status-message.error {{ background-color: rgba(255, 77, 128, 0.1); border-color: var(--error-color); color: var(--error-color); }}
             .status-message.error strong::before {{ content: '❌  THẤT BẠI!'; }}
-            .footer-text {{ text-align: center; margin-top: 2.5rem; font-size: 0.85rem; color: var(--text-muted); opacity: 0.6; }}
+            
+            .footer-text {{
+                text-align: center; margin-top: 2.5rem; font-size: 0.9rem; color: var(--text-muted); opacity: 0.8;
+                display: flex; align-items: center; justify-content: center;
+            }}
+            .blue-check {{
+                width: 18px; height: 18px; margin-left: 8px;
+            }}
         </style>
     </head>
     <body>
+        <div class="star"></div>
+        <div class="star"></div>
+        <div class="star"></div>
+        <div class="star"></div>
+
         <div class="container">
             <div class="card">
-                <h1><span>🌌</span>Bảng Điều Khiển Poller (v6.1)</h1>
+                <h1><span>🌌</span>Bảng Điều Khiển Poller (v6.0)</h1>
                 <p class="description">Quản lý API và Lời chúc 0h tại trung tâm điều khiển.</p>
                 
                 <form id="config-form">
@@ -716,19 +779,23 @@ async def get_curl_ui():
 
             <div class="card">
                 <h2><span>📦</span> Backup & Restore</h2>
-                <p class="description">Tải file backup JSON để khôi phục cấu hình trên máy khác.</p>
+                <p class="description">Tạo hoặc khôi phục cấu hình của sếp (bao gồm cURL và link ảnh).</p>
                 
-                <label for="backup_secret_key">Secret Key (Dùng cho 2 nút dưới):</label>
+                <label for="backup_secret_key">Secret Key (Dùng cho các nút dưới):</label>
                 <input type="password" id="backup_secret_key" placeholder="Nhập WEBHOOK_SECRET của bạn">
+
+                <label for="backup_data" style="margin-top: 1.5rem;">Dữ liệu Backup (Copy/Paste):</label>
+                <textarea id="backup_data" placeholder="Ấn '1. Tạo Backup' để lấy dữ liệu. Hoặc dán dữ liệu restore vào đây..."></textarea>
                 
                 <div style="display: flex; gap: 1rem; margin-top: 2rem;">
-                    <button type="button" id="backup-btn" class="secondary" style="width: 50%; margin: 0;">1. Tải Backup (.json)</button>
-                    
-                    <label for="restore-file" class="file-upload-btn" style="width: 50%; margin: 0; background: linear-gradient(90deg, var(--primary-glow) 0%, var(--secondary-glow) 100%); box-shadow: 0 4px 15px rgba(0, 175, 255, 0.3);">
-                        2. Khôi phục từ File...
-                    </label>
-                    <input type="file" id="restore-file" accept=".json">
+                    <button type="button" id="backup-btn" class="secondary" style="width: 50%; margin: 0;">1. Tạo Backup (Hiển thị)</button>
+                    <button type="button" id="restore-text-btn" style="width: 50%; margin: 0;">2. Khôi phục từ Text</button>
                 </div>
+
+                <label for="restore-file" class="file-upload-btn" style="width: 100%; margin: 1rem 0 0 0; background: var(--secondary-color);">
+                    ... Hoặc 3. Khôi phục từ File ...
+                </label>
+                <input type="file" id="restore-file" accept=".json">
                 <div id="file-name" style="text-align: center; margin-top: 1rem;">Chưa chọn file nào.</div>
 
                 <div id="backup-status" class="status-message">
@@ -750,7 +817,18 @@ async def get_curl_ui():
                 </div>
             </div>
             
-            <p class="footer-text">TapHoaMMO Poller Service 6.1 (Cosmic UI & Bugfix)</p>
+            <footer class="footer-text">
+                Bản quyền thuộc về Admin Văn Linh
+                <svg class="blue-check" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path fill-rule="evenodd" clip-rule="evenodd" d="M12 2C6.47715 2 2 6.47715 2 12C2 17.5228 6.47715 22 12 22C17.5228 22 22 17.5228 22 12C22 6.47715 17.5228 2 12 2ZM16.7071 9.29289C17.0976 9.68342 17.0976 10.3166 16.7071 10.7071L11.7071 15.7071C11.3166 16.0976 10.6834 16.0976 10.2929 15.7071L7.29289 12.7071C6.90237 12.3166 6.90237 11.6834 7.29289 11.2929C7.68342 10.9024 8.31658 10.9024 8.70711 11.2929L11 13.5858L15.2929 9.29289C15.6834 8.90237 16.3166 8.90237 16.7071 9.29289Z" fill="url(#paint0_linear_v6)"/>
+                    <defs>
+                        <linearGradient id="paint0_linear_v6" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse">
+                            <stop stop-color="#00AFFF"/>
+                            <stop offset="1" stop-color="#6A00FF"/>
+                        </linearGradient>
+                    </defs>
+                </svg>
+            </footer>
         </div>
         
         <script>
@@ -844,37 +922,28 @@ async def get_curl_ui():
                 }}
             }});
 
-            // Xử lý Backup (Tải File)
+            // [CẬP NHẬT v6.0] Xử lý Backup (Hiển thị text)
             document.getElementById("backup-btn").addEventListener("click", async function(e) {{
                 e.preventDefault();
                 const secret = document.getElementById("backup_secret_key").value;
                 const statusEl = document.getElementById("backup-status");
                 const statusBody = document.getElementById("backup-status-body");
+                const backupDataEl = document.getElementById("backup_data");
                 
                 if (!secret) {{
                     statusBody.textContent = "Vui lòng nhập Secret Key (Dùng để Backup/Restore).";
                     statusEl.className = "status-message error show";
                     return;
                 }}
-                statusBody.textContent = "Đang tạo file backup...";
+                statusBody.textContent = "Đang lấy dữ liệu backup...";
                 statusEl.className = "status-message loading show";
 
                 try {{
                     const response = await fetch(`/debug/get-backup?secret=${{encodeURIComponent(secret)}}`);
                     const result = await response.json();
                     if (response.ok) {{
-                        const dataStr = JSON.stringify(result, null, 2);
-                        const dataBlob = new Blob([dataStr], {{type: "application/json"}});
-                        const url = URL.createObjectURL(dataBlob);
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = "taphoammo_backup.json";
-                        document.body.appendChild(a);
-                        a.click();
-                        document.body.removeChild(a);
-                        URL.revokeObjectURL(url);
-                        
-                        statusBody.textContent = "Tải file backup thành công!";
+                        backupDataEl.value = JSON.stringify(result, null, 2); // Format JSON cho đẹp
+                        statusBody.textContent = "Đã lấy dữ liệu backup thành công. Hãy copy text bên trên.";
                         statusEl.className = "status-message success show";
                     }} else {{
                         statusBody.textContent = `Lỗi: ${{result.detail || 'Lỗi không xác định.'}}`;
@@ -886,43 +955,21 @@ async def get_curl_ui():
                 }}
             }});
             
-            // Xử lý Restore (Upload File)
-            const fileInput = document.getElementById("restore-file");
-            const fileNameEl = document.getElementById("file-name");
-
-            fileInput.addEventListener("change", function(e) {{
-                const file = e.target.files[0];
-                if (file) {{
-                    fileNameEl.textContent = `Đã chọn: ${{file.name}}`;
-                    triggerRestore(file); // Tự động restore
-                }} else {{
-                    fileNameEl.textContent = "Chưa chọn file nào.";
-                }}
-            }});
-
-            async function triggerRestore(file) {{
-                const secret = document.getElementById("backup_secret_key").value;
+            // [CẬP NHẬT v6.0] Hàm logic chung để Restore
+            async function triggerRestore(data, secret) {{
                 const statusEl = document.getElementById("backup-status");
                 const statusBody = document.getElementById("backup-status-body");
-
-                if (!secret) {{
-                    statusBody.textContent = "Vui lòng nhập Secret Key (Dùng để Backup/Restore) trước khi chọn file.";
-                    statusEl.className = "status-message error show";
-                    fileInput.value = ""; // Reset input
-                    fileNameEl.textContent = "Chưa chọn file nào.";
-                    return;
-                }}
+                const fileInput = document.getElementById("restore-file");
+                const fileNameEl = document.getElementById("file-name");
 
                 statusBody.textContent = "Đang khôi phục...";
                 statusEl.className = "status-message loading show";
 
-                const formData = new FormData();
-                formData.append("file", file);
-
                 try {{
-                    const response = await fetch(`/debug/restore-backup?secret=${{encodeURIComponent(secret)}}`, {{
+                    const response = await fetch(`/debug/restore-from-text?secret=${{encodeURIComponent(secret)}}`, {{
                         method: "POST",
-                        body: formData
+                        headers: {{"Content-Type": "application/json"}},
+                        body: data // Gửi text JSON thô
                     }});
                     const result = await response.json();
                     if (response.ok) {{
@@ -932,16 +979,74 @@ async def get_curl_ui():
                     }} else {{
                         statusBody.textContent = `Lỗi: ${{result.detail || 'Lỗi không xác định.'}}`;
                         statusEl.className = "status-message error show";
-                        fileInput.value = "";
-                        fileNameEl.textContent = "Chưa chọn file nào.";
                     }}
                 }} catch (err) {{
                     statusBody.textContent = `Lỗi kết nối: ${{err.message}}.`;
                     statusEl.className = "status-message error show";
+                }} finally {{
                     fileInput.value = "";
                     fileNameEl.textContent = "Chưa chọn file nào.";
                 }}
             }}
+
+            // [THÊM MỚI v6.0] Xử lý Restore từ Text
+            document.getElementById("restore-text-btn").addEventListener("click", async function(e) {{
+                e.preventDefault();
+                const secret = document.getElementById("backup_secret_key").value;
+                const backupData = document.getElementById("backup_data").value;
+                const statusEl = document.getElementById("backup-status");
+                const statusBody = document.getElementById("backup-status-body");
+
+                if (!secret || !backupData) {{
+                    statusBody.textContent = "Vui lòng nhập Secret Key và dán dữ liệu Backup vào ô.";
+                    statusEl.className = "status-message error show";
+                    return;
+                }}
+                
+                try {{ JSON.parse(backupData); }} catch (jsonErr) {{
+                    statusBody.textContent = "Lỗi: Dữ liệu dán vào không phải là JSON hợp lệ.";
+                    statusEl.className = "status-message error show";
+                    return;
+                }}
+
+                if (confirm("Bạn có chắc chắn muốn khôi phục? Dữ liệu cũ sẽ bị ghi đè.")) {{
+                    triggerRestore(backupData, secret);
+                }}
+            }});
+
+            // [CẬP NHẬT v6.0] Xử lý Restore từ File
+            const fileInput = document.getElementById("restore-file");
+            const fileNameEl = document.getElementById("file-name");
+
+            fileInput.addEventListener("change", function(e) {{
+                const file = e.target.files[0];
+                if (file) {{
+                    fileNameEl.textContent = `Đã chọn: ${{file.name}}`;
+                    
+                    const secret = document.getElementById("backup_secret_key").value;
+                    const statusEl = document.getElementById("backup-status");
+                    const statusBody = document.getElementById("backup-status-body");
+
+                    if (!secret) {{
+                        statusBody.textContent = "Vui lòng nhập Secret Key (Dùng để Backup/Restore) trước khi chọn file.";
+                        statusEl.className = "status-message error show";
+                        fileInput.value = "";
+                        fileNameEl.textContent = "Chưa chọn file nào.";
+                        return;
+                    }}
+
+                    if (confirm("Bạn có chắc chắn muốn khôi phục? Dữ liệu cũ sẽ bị ghi đè.")) {{
+                        const reader = new FileReader();
+                        reader.onload = function(evt) {{
+                            triggerRestore(evt.target.result, secret);
+                        }};
+                        reader.readAsText(file);
+                    }} else {{
+                        fileInput.value = "";
+                        fileNameEl.textContent = "Chưa chọn file nào.";
+                    }}
+                }}
+            }});
         </script>
     </body>
     </html>
@@ -1004,57 +1109,46 @@ async def debug_get_backup(secret: str):
     }
     return JSONResponse(content=backup_data)
 
-# Endpoint Restore (nhận File Upload)
-@app.post("/debug/restore-backup")
-async def debug_restore_backup(secret: str, file: UploadFile = File(...)):
+# [CẬP NHẬT v6.0] Endpoint Restore (từ File Upload)
+@app.post("/debug/restore-from-file")
+async def debug_restore_from_file(secret: str, file: UploadFile = File(...)):
     if secret != WEBHOOK_SECRET:
         raise HTTPException(status_code=401, detail="unauthorized")
     
     try:
         contents = await file.read()
         new_config_data = json.loads(contents)
+        _apply_restore(new_config_data) # Gọi hàm logic chung
     except Exception as e:
-        tg_send(f"❌ <b>KHÔI PHỤC THẤT BẠI</b>\nFile không hợp lệ hoặc không phải JSON.\n<code>{e}</code>")
-        raise HTTPException(status_code=400, detail=f"Invalid file or JSON data: {e}")
+        # Lỗi đã được xử lý/gửi bởi _apply_restore hoặc do đọc file
+        print(f"Restore from file failed: {e}")
+        if not isinstance(e, HTTPException):
+             raise HTTPException(status_code=400, detail=f"Invalid file or JSON data: {e}")
+        else:
+             raise e
     
-    if "notify_curl" not in new_config_data or "chat_curl" not in new_config_data:
-        tg_send(f"❌ <b>KHÔI PHỤC THẤT BẠI</b>\nDữ liệu JSON không đúng cấu trúc (thiếu cURL).")
-        raise HTTPException(status_code=400, detail="Invalid config structure.")
+    return {"ok": True, "detail": "Khôi phục từ file thành công!"}
 
+# [THÊM MỚI v6.0] Endpoint Restore (từ Text)
+@app.post("/debug/restore-from-text")
+async def debug_restore_from_text(req: Request, secret: str):
+    if secret != WEBHOOK_SECRET:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    
     try:
-        parsed_notify = parse_curl_command(new_config_data["notify_curl"])
-        parsed_chat = parse_curl_command(new_config_data["chat_curl"])
+        new_config_data = await req.json()
+        _apply_restore(new_config_data) # Gọi hàm logic chung
     except Exception as e:
-        tg_send(f"❌ <b>KHÔI PHỤC THẤT BẠI</b>\nLỗi khi phân tích cURL từ file backup.\n<code>{e}</code>")
-        raise HTTPException(status_code=400, detail=f"Failed to parse cURL from backup: {e}")
+        print(f"Restore from text failed: {e}")
+        if not isinstance(e, HTTPException):
+             raise HTTPException(status_code=400, detail=f"Invalid JSON data: {e}")
+        else:
+             raise e
+    
+    return {"ok": True, "detail": "Khôi phục từ text thành công!"}
 
-    global GLOBAL_CONFIG, LAST_NOTIFY_NUMS, DAILY_ORDER_COUNT
-    global DAILY_COUNTER_DATE, SEEN_CHAT_DATES
-    
-    # Áp dụng cấu hình mới
-    GLOBAL_CONFIG["notify_curl"] = new_config_data["notify_curl"]
-    GLOBAL_CONFIG["chat_curl"] = new_config_data["chat_curl"]
-    GLOBAL_CONFIG["notify_api"] = parsed_notify
-    GLOBAL_CONFIG["chat_api"] = parsed_chat
-    GLOBAL_CONFIG["greeting_enabled"] = new_config_data.get("greeting_enabled", True)
-    GLOBAL_CONFIG["greeting_images"] = new_config_data.get("greeting_images", list(DEFAULT_IMAGE_LINKS))
-    
-    # Reset lại toàn bộ trạng thái
-    LAST_NOTIFY_NUMS = []
-    DAILY_ORDER_COUNT.clear()
-    DAILY_COUNTER_DATE = "" 
-    SEEN_CHAT_DATES.clear()
-    
-    print("--- CONFIG RESTORED BY UI ---")
-    print(f"Notify API set to: {GLOBAL_CONFIG['notify_api'].get('url')}")
-    print(f"Chat API set to: {GLOBAL_CONFIG['chat_api'].get('url')}")
-    print(f"Greeting Enabled: {GLOBAL_CONFIG['greeting_enabled']}")
-    
-    tg_send("✅ <b>KHÔI PHỤC THÀNH CÔNG</b>\nToàn bộ cấu hình đã được khôi phục. Bot sẽ chạy lại từ đầu.")
-    
-    return {"ok": True, "detail": "Khôi phục thành công!"}
 
-# Endpoint set-config (lưu cả cURL thô)
+# [CẬP NHẬT] Endpoint set-config (lưu cả cURL thô)
 @app.post("/debug/set-config")
 async def debug_set_config(req: Request, secret: str):
     if secret != WEBHOOK_SECRET:
