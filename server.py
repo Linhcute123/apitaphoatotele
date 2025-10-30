@@ -203,7 +203,7 @@ def parse_notify_text(text: str) -> Dict[str, Any]:
         return {"raw": s, "numbers": nums, "table": table}
     return {"raw": s}
 
-# Hàm Parse cURL
+# Hàm Parse cURL (hỗ trợ data-raw)
 def parse_curl_command(curl_text: str) -> Dict[str, Any]:
     args = shlex.split(curl_text)
     method = "GET"; headers = {}; data = None; url = ""
@@ -336,7 +336,7 @@ def fetch_chats(is_baseline_run: bool = False) -> List[Dict[str, str]]:
             tg_send(f"⚠️ <b>Lỗi không mong muốn API Chat:</b>\n<code>{html.escape(str(e))}</code>")
         return []
 
-# Hàm Poller
+# [CẬP NHẬT v6.1] Hàm Poller (Fix lỗi 'labels' not defined)
 def poll_once(is_baseline_run: bool = False):
     global LAST_NOTIFY_NUMS, DAILY_ORDER_COUNT, DAILY_COUNTER_DATE, GLOBAL_CONFIG
 
@@ -376,6 +376,8 @@ def poll_once(is_baseline_run: bool = False):
             if len(current_nums) != len(LAST_NOTIFY_NUMS):
                 LAST_NOTIFY_NUMS = [0] * len(current_nums)
 
+            # [FIX v6.1] Thêm dòng bị thiếu
+            labels = _labels_for_notify(len(current_nums))
             instant_alerts_map = {}
             has_new_notification = False
             has_new_chat = False
@@ -383,7 +385,7 @@ def poll_once(is_baseline_run: bool = False):
             for i in range(len(current_nums)):
                 current_val = current_nums[i]
                 last_val = LAST_NOTIFY_NUMS[i]
-                label = labels[i]
+                label = labels[i] # Dòng này giờ đã an toàn
                 
                 if current_val > last_val:
                     has_new_notification = True
@@ -501,7 +503,7 @@ def poller_loop():
 
 # =================== API endpoints ===================
 
-# [CẬP NHẬT] Giao diện web v6.0 (Giao diện VŨ TRỤ)
+# Giao diện web v6.0
 @app.get("/", response_class=HTMLResponse)
 async def get_curl_ui():
     global GLOBAL_CONFIG
@@ -679,7 +681,7 @@ async def get_curl_ui():
     <body>
         <div class="container">
             <div class="card">
-                <h1><span>🌌</span>Bảng Điều Khiển Poller (v6.0)</h1>
+                <h1><span>🌌</span>Bảng Điều Khiển Poller (v6.1)</h1>
                 <p class="description">Quản lý API và Lời chúc 0h tại trung tâm điều khiển.</p>
                 
                 <form id="config-form">
@@ -722,12 +724,12 @@ async def get_curl_ui():
                 <div style="display: flex; gap: 1rem; margin-top: 2rem;">
                     <button type="button" id="backup-btn" class="secondary" style="width: 50%; margin: 0;">1. Tải Backup (.json)</button>
                     
-                    <label for="restore-file" class="file-upload-btn" style="width: 50%; margin: 0; background: var(--primary-glow); box-shadow: 0 4px 15px rgba(0, 175, 255, 0.3);">
+                    <label for="restore-file" class="file-upload-btn" style="width: 50%; margin: 0; background: linear-gradient(90deg, var(--primary-glow) 0%, var(--secondary-glow) 100%); box-shadow: 0 4px 15px rgba(0, 175, 255, 0.3);">
                         2. Khôi phục từ File...
                     </label>
                     <input type="file" id="restore-file" accept=".json">
                 </div>
-                <div id="file-name">Chưa chọn file nào.</div>
+                <div id="file-name" style="text-align: center; margin-top: 1rem;">Chưa chọn file nào.</div>
 
                 <div id="backup-status" class="status-message">
                     <strong></strong>
@@ -748,7 +750,7 @@ async def get_curl_ui():
                 </div>
             </div>
             
-            <p class="footer-text">TapHoaMMO Poller Service 6.0 (Cosmic UI & File Backup)</p>
+            <p class="footer-text">TapHoaMMO Poller Service 6.1 (Cosmic UI & Bugfix)</p>
         </div>
         
         <script>
@@ -842,7 +844,7 @@ async def get_curl_ui():
                 }}
             }});
 
-            // [THÊM MỚI] Xử lý Backup (Tải File)
+            // Xử lý Backup (Tải File)
             document.getElementById("backup-btn").addEventListener("click", async function(e) {{
                 e.preventDefault();
                 const secret = document.getElementById("backup_secret_key").value;
@@ -884,7 +886,7 @@ async def get_curl_ui():
                 }}
             }});
             
-            // [THÊM MỚI] Xử lý Restore (Upload File)
+            // Xử lý Restore (Upload File)
             const fileInput = document.getElementById("restore-file");
             const fileNameEl = document.getElementById("file-name");
 
@@ -892,8 +894,7 @@ async def get_curl_ui():
                 const file = e.target.files[0];
                 if (file) {{
                     fileNameEl.textContent = `Đã chọn: ${{file.name}}`;
-                    // Tự động trigger restore khi đã chọn file
-                    triggerRestore(file);
+                    triggerRestore(file); // Tự động restore
                 }} else {{
                     fileNameEl.textContent = "Chưa chọn file nào.";
                 }}
@@ -921,7 +922,7 @@ async def get_curl_ui():
                 try {{
                     const response = await fetch(`/debug/restore-backup?secret=${{encodeURIComponent(secret)}}`, {{
                         method: "POST",
-                        body: formData // Gửi FormData
+                        body: formData
                     }});
                     const result = await response.json();
                     if (response.ok) {{
@@ -988,14 +989,13 @@ async def debug_test_greeting(secret: str):
         print(f"Test greeting error: {e}")
         raise HTTPException(status_code=500, detail=f"Lỗi khi gửi test: {e}")
 
-# [THÊM MỚI] Endpoint Backup (trả về JSON)
+# Endpoint Backup (trả về JSON)
 @app.get("/debug/get-backup")
 async def debug_get_backup(secret: str):
     if secret != WEBHOOK_SECRET:
         raise HTTPException(status_code=401, detail="unauthorized")
     
     global GLOBAL_CONFIG
-    # Không trả về phần "api_config" đã parse, chỉ trả về text cURL thô
     backup_data = {
         "notify_curl": GLOBAL_CONFIG["notify_curl"],
         "chat_curl": GLOBAL_CONFIG["chat_curl"],
@@ -1004,7 +1004,7 @@ async def debug_get_backup(secret: str):
     }
     return JSONResponse(content=backup_data)
 
-# [CẬP NHẬT] Endpoint Restore (nhận File Upload)
+# Endpoint Restore (nhận File Upload)
 @app.post("/debug/restore-backup")
 async def debug_restore_backup(secret: str, file: UploadFile = File(...)):
     if secret != WEBHOOK_SECRET:
@@ -1017,12 +1017,10 @@ async def debug_restore_backup(secret: str, file: UploadFile = File(...)):
         tg_send(f"❌ <b>KHÔI PHỤC THẤT BẠI</b>\nFile không hợp lệ hoặc không phải JSON.\n<code>{e}</code>")
         raise HTTPException(status_code=400, detail=f"Invalid file or JSON data: {e}")
     
-    # Kiểm tra cấu trúc cơ bản
     if "notify_curl" not in new_config_data or "chat_curl" not in new_config_data:
         tg_send(f"❌ <b>KHÔI PHỤC THẤT BẠI</b>\nDữ liệu JSON không đúng cấu trúc (thiếu cURL).")
         raise HTTPException(status_code=400, detail="Invalid config structure.")
 
-    # [CẬP NHẬT] Phải parse cURL từ file backup
     try:
         parsed_notify = parse_curl_command(new_config_data["notify_curl"])
         parsed_chat = parse_curl_command(new_config_data["chat_curl"])
@@ -1056,7 +1054,7 @@ async def debug_restore_backup(secret: str, file: UploadFile = File(...)):
     
     return {"ok": True, "detail": "Khôi phục thành công!"}
 
-# [CẬP NHẬT] Endpoint set-config (lưu cả cURL thô)
+# Endpoint set-config (lưu cả cURL thô)
 @app.post("/debug/set-config")
 async def debug_set_config(req: Request, secret: str):
     if secret != WEBHOOK_SECRET:
@@ -1108,13 +1106,11 @@ async def debug_set_config(req: Request, secret: str):
     global GLOBAL_CONFIG, LAST_NOTIFY_NUMS, DAILY_ORDER_COUNT
     global DAILY_COUNTER_DATE, SEEN_CHAT_DATES
     
-    # Lưu cả cURL thô (để backup) và cURL đã parse (để chạy)
     GLOBAL_CONFIG["notify_curl"] = curl_notify_txt
     GLOBAL_CONFIG["chat_curl"] = curl_chat_txt
     GLOBAL_CONFIG["notify_api"] = parsed_notify
     GLOBAL_CONFIG["chat_api"] = parsed_chat
 
-    # Áp dụng Cấu hình Lời chúc
     GLOBAL_CONFIG["greeting_enabled"] = bool(int(greeting_enabled_raw))
     GLOBAL_CONFIG["greeting_images"] = [line.strip() for line in image_links_raw.splitlines() if line.strip().startswith('http')]
     
