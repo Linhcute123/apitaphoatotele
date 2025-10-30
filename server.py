@@ -33,7 +33,7 @@ POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "12"))
 VERIFY_TLS    = bool(int(os.getenv("VERIFY_TLS", "1")))
 DISABLE_POLLER = os.getenv("DISABLE_POLLER", "0") == "1"
 
-# Cấu hình runtime (thêm body_data)
+# Cấu hình runtime
 try:
     NOTIFY_CONFIG = {
         "url": NOTIFY_API_URL, "method": NOTIFY_API_METHOD,
@@ -64,7 +64,7 @@ DAILY_COUNTER_DATE = ""
 SEEN_CHAT_DATES: set[str] = set()
 LAST_SEEN_CHATS: Dict[str, str] = {}
 
-# [THÊM MỚI] Cấu hình lời chúc 0h
+# Cấu hình lời chúc 0h
 GREETING_ENABLED = True
 DEFAULT_IMAGE_LINKS = [
     "https://i.imgur.com/g6m3l08.jpeg",
@@ -73,7 +73,7 @@ DEFAULT_IMAGE_LINKS = [
     "https://i.imgur.com/0PViC3S.jpeg",
     "https://i.imgur.com/7gK10sL.jpeg"
 ]
-GREETING_IMAGE_LINKS = list(DEFAULT_IMAGE_LINKS) # Danh sách này sẽ được UI ghi đè
+GREETING_IMAGE_LINKS = list(DEFAULT_IMAGE_LINKS)
 GREETING_MESSAGES = [
     (
         "🥂 <b>BÁO CÁO TỔNG KẾT NGÀY {date}</b> 🥂\n\n"
@@ -114,7 +114,6 @@ GREETING_MESSAGES = [
 ]
 
 # =================== Telegram ===================
-# [CẬP NHẬT] tg_send để thêm "cache buster"
 def tg_send(text: str, photo_url: Optional[str] = None):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("[WARN] Missing TELEGRAM_* env")
@@ -124,8 +123,6 @@ def tg_send(text: str, photo_url: Optional[str] = None):
     payload = {}
     
     if photo_url:
-        # [CẬP NHẬT v5.1] Thêm "cache buster" (tham số _t) để làm mới link random
-        # Đảm bảo Telegram luôn tải ảnh mới
         cache_buster = f"_t={int(time.time())}"
         if "?" in photo_url:
             final_photo_url = f"{photo_url}&{cache_buster}"
@@ -134,12 +131,12 @@ def tg_send(text: str, photo_url: Optional[str] = None):
             
         api_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
         caption = text
-        if len(caption) > 1024: # Giới hạn caption của Telegram
+        if len(caption) > 1024:
             caption = text[:1021] + "..."
         
         payload = {
             "chat_id": TELEGRAM_CHAT_ID,
-            "photo": final_photo_url, # Sử dụng link đã thêm cache buster
+            "photo": final_photo_url,
             "caption": caption,
             "parse_mode": "HTML"
         }
@@ -148,14 +145,13 @@ def tg_send(text: str, photo_url: Optional[str] = None):
             r = requests.post(api_url, json=payload, timeout=30)
             if r.status_code >= 400:
                 print(f"Telegram photo error: {r.status_code} {r.text}")
-                tg_send(text, photo_url=None) # Gửi text dự phòng
+                tg_send(text, photo_url=None)
             return
         except Exception as e:
             print(f"Error sending photo: {e}")
-            tg_send(text, photo_url=None) # Gửi text dự phòng
+            tg_send(text, photo_url=None)
             return
 
-    # Gửi text (chia nhỏ nếu quá dài)
     api_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     MAX = 3900  
     chunks = [text[i:i+MAX] for i in range(0, len(text), MAX)] or [""]
@@ -172,20 +168,23 @@ def tg_send(text: str, photo_url: Optional[str] = None):
             print(f"Telegram text error: {r_text.status_code} {r_text.text}")
             break
 
-# Hàm gửi lời chúc 0h
+# Hàm gửi lời chúc 0h (đổi định dạng ngày)
 def send_good_morning_message(old_date: str, counts: defaultdict):
-    """
-    Gửi lời chúc mừng ngày mới kèm tổng kết ngày cũ và ảnh.
-    """
     print(f"Sending Good Morning message for end of day {old_date}...")
-    
+
+    try:
+        date_obj = datetime.datetime.strptime(old_date, "%Y-%m-%d")
+        formatted_date = date_obj.strftime("%d-%m-%Y")
+    except ValueError:
+        formatted_date = old_date
+
     product_total = counts.get("Đơn hàng sản phẩm", 0)
     service_total = counts.get("Đơn hàng dịch vụ", 0)
     total_orders = product_total + service_total
 
     msg_template = random.choice(GREETING_MESSAGES)
-    msg = msg_template.format(date=old_date, orders=total_orders)
-    
+    msg = msg_template.format(date=formatted_date, orders=total_orders)
+
     photo = None
     links_to_use = GREETING_IMAGE_LINKS if GREETING_IMAGE_LINKS else DEFAULT_IMAGE_LINKS
     if links_to_use:
@@ -293,13 +292,13 @@ def _make_api_request(config: Dict[str, Any]) -> requests.Response:
     return requests.request(method, url, **kwargs)
 
 
-# Hàm gọi API Tin nhắn (chỉ lấy tin CÓ CỜ UNREAD)
+# [CẬP NHẬT] Hàm gọi API Tin nhắn (logic v5.2 - bỏ lọc `newMes`)
 def fetch_chats(is_baseline_run: bool = False) -> List[Dict[str, str]]:
     if not CHAT_CONFIG.get("url"):
         print("[WARN] CHAT_API_URL is not set. Skipping chat fetch.")
         return []
 
-    global SEEN_CHAT_DATES, LAST_SEEN_CHATS
+    global SEEN_CHAT_DATES
     
     try:
         r = _make_api_request(CHAT_CONFIG)
@@ -319,44 +318,35 @@ def fetch_chats(is_baseline_run: bool = False) -> List[Dict[str, str]]:
 
         new_messages = []
         current_chat_dates = set()
-        all_users_in_response = set()
         
         for chat in data:
             if not isinstance(chat, dict): continue
             
             user_id = chat.get("guest_user", "N/A")
             current_msg = chat.get("last_chat", "[không có nội dung]")
-            all_users_in_response.add(user_id)
 
             chat_id = chat.get("date")
             if not chat_id:
                 chat_id = hashlib.sha256(f"{user_id}:{current_msg}".encode()).hexdigest() 
             
-            new_mes_val = chat.get("newMes")
-            is_unread = str(new_mes_val) == "1" or new_mes_val is True
-
-            if not is_baseline_run:
-                current_chat_dates.add(chat_id)
-
-                if is_unread and chat_id not in SEEN_CHAT_DATES:
-                    SEEN_CHAT_DATES.add(chat_id)
-                    
+            current_chat_dates.add(chat_id) # Theo dõi tất cả ID hiện có
+            
+            is_new = chat_id not in SEEN_CHAT_DATES
+            
+            if is_new:
+                SEEN_CHAT_DATES.add(chat_id)
+                if not is_baseline_run:
+                    # Nếu không phải lần chạy đầu tiên, đây là tin nhắn mới
                     new_messages.append({
                         "user": user_id,
                         "chat": current_msg,
                     })
-            
-            LAST_SEEN_CHATS[user_id] = current_msg
         
-        if not is_baseline_run:
-            SEEN_CHAT_DATES.intersection_update(current_chat_dates)
-        
-        for user in list(LAST_SEEN_CHATS.keys()):
-            if user not in all_users_in_response:
-                del LAST_SEEN_CHATS[user]
+        # Dọn dẹp: Xóa các ID không còn tồn tại trong API response
+        SEEN_CHAT_DATES.intersection_update(current_chat_dates)
         
         if new_messages:
-            print(f"Fetched {len(new_messages)} new unread message(s).")
+            print(f"Fetched {len(new_messages)} new message(s) (regardless of read status).")
         return new_messages
 
     except requests.exceptions.RequestException as e:
@@ -370,39 +360,36 @@ def fetch_chats(is_baseline_run: bool = False) -> List[Dict[str, str]]:
             tg_send(f"⚠️ <b>Lỗi không mong muốn API Chat:</b>\n<code>{html.escape(str(e))}</code>")
         return []
 
-# Hàm Poller (thêm logic chúc 0h)
-def poll_once():
+# [CẬP NHẬT] Hàm Poller (thêm logic baseline)
+def poll_once(is_baseline_run: bool = False):
     global LAST_NOTIFY_NUMS, DAILY_ORDER_COUNT, DAILY_COUNTER_DATE
 
     if not NOTIFY_CONFIG.get("url"):
-        print("No NOTIFY_API_URL set")
+        if not is_baseline_run: print("No NOTIFY_API_URL set")
         return
 
     try:
-        # 1. GỌI API THÔNG BÁO (getNotify)
         r = _make_api_request(NOTIFY_CONFIG)
-
         text = (r.text or "").strip()
         if not text:
-            print("getNotify: empty response")
+            if not is_baseline_run: print("getNotify: empty response")
             return
 
         low = text[:200].lower()
         if low.startswith("<!doctype") or "<html" in low:
-            if text != str(LAST_NOTIFY_NUMS):
+            if text != str(LAST_NOTIFY_NUMS) and not is_baseline_run:
                 tg_send("⚠️ <b>getNotify trả về HTML</b> (Cookie/Header hết hạn?).")
-            print("HTML detected, preview sent. Probably headers/cookie expired.")
+            if not is_baseline_run: print("HTML detected, probably headers/cookie expired.")
             return
         
-        # 2. XỬ LÝ KẾT QUẢ getNotify
         parsed = parse_notify_text(text)
         
         if "numbers" in parsed:
             now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=7)))
             today_str = now.strftime("%Y-%m-%d")
 
-            # GỬI LỜI CHÚC NẾU SANG NGÀY MỚI
             if today_str != DAILY_COUNTER_DATE:
+                # Gửi lời chúc nếu BẬT và không phải lần chạy đầu tiên
                 if DAILY_COUNTER_DATE and GREETING_ENABLED:
                     print(f"New day detected ({today_str}). Sending good morning message for {DAILY_COUNTER_DATE}...")
                     send_good_morning_message(DAILY_COUNTER_DATE, DAILY_ORDER_COUNT)
@@ -414,12 +401,10 @@ def poll_once():
             if len(current_nums) != len(LAST_NOTIFY_NUMS):
                 LAST_NOTIFY_NUMS = [0] * len(current_nums)
 
-            labels = _labels_for_notify(len(current_nums))
             instant_alerts_map = {}
             has_new_notification = False
             has_new_chat = False
 
-            # 3. SO SÁNH GIÁ TRỊ MỚI VÀ CŨ
             for i in range(len(current_nums)):
                 current_val = current_nums[i]
                 last_val = LAST_NOTIFY_NUMS[i]
@@ -441,10 +426,9 @@ def poll_once():
                     icon = _get_icon_for_label(label)
                     instant_alerts_map[label] = f"  {icon} <b>{label}:</b> {current_val}"
 
-            # 4. GỌI API TIN NHẮN (nếu cần)
             new_chat_messages = []
             if has_new_chat:
-                fetched_messages = fetch_chats(is_baseline_run=False) 
+                fetched_messages = fetch_chats(is_baseline_run=is_baseline_run) 
                 for chat in fetched_messages:
                     user = html.escape(chat.get("user", "N/A"))
                     msg = html.escape(chat.get("chat", "..."))
@@ -452,9 +436,8 @@ def poll_once():
                     new_chat_messages.append(f"<b>--- Tin nhắn từ: {user} ---</b>")
                     new_chat_messages.append(f"  <b>Nội dung: {msg}</b>")
 
-
-            # 5. GỬI THÔNG BÁO TỨC THỜI
-            if has_new_notification:
+            # Chỉ gửi nếu có thông báo mới VÀ không phải lần chạy baseline
+            if has_new_notification and not is_baseline_run:
                 ordered_labels = [
                     "Đơn hàng sản phẩm", "Đơn hàng dịch vụ", "Đặt trước",
                     "Khiếu nại", "Tin nhắn", "Đánh giá"
@@ -471,6 +454,7 @@ def poll_once():
                     f"<b>⭐ BÁO CÁO NHANH - TAPHOAMMO</b>"
                 ]
 
+                # [CẬP NHẬT] Luôn kiểm tra new_chat_messages
                 if new_chat_messages:
                     msg_lines.append("➖➖➖➖➖➖➖➖➖➖➖")
                     msg_lines.append("<b>💬 BẠN CÓ TIN NHẮN MỚI:</b>")
@@ -481,29 +465,35 @@ def poll_once():
                     msg_lines.append("<b>🔔 CẬP NHẬT TRẠNG THÁI:</b>")
                     msg_lines.extend(instant_alert_lines)
                 
-                msg = "\n".join(msg_lines)
-                tg_send(msg)
-                print("getNotify changes (INCREASE) -> Professional Telegram sent.")
-                
-            else:
+                # Tránh gửi tin trống (ví dụ: chỉ có tiêu đề)
+                if new_chat_messages or instant_alert_lines:
+                    msg = "\n".join(msg_lines)
+                    tg_send(msg)
+                    print("getNotify changes (INCREASE) -> Professional Telegram sent.")
+                else:
+                    print("getNotify changes (INCREASE) -> No new unread chats or alerts to show.")
+
+            elif not is_baseline_run:
                 print("getNotify unchanged or DECREASED -> Skipping.")
 
             LAST_NOTIFY_NUMS = current_nums
         
         else:
-            if text != str(LAST_NOTIFY_NUMS):
+            if text != str(LAST_NOTIFY_NUMS) and not is_baseline_run:
                 msg = f"🔔 <b>TapHoaMMO getNotify (lỗi)</b>\n<code>{html.escape(text)}</code>"
                 tg_send(msg)
                 print("getNotify (non-numeric) changed -> Telegram sent.")
 
     except requests.exceptions.RequestException as e:
-        print(f"poll_once network error: {e}")
-        tg_send(f"⚠️ <b>Lỗi Mạng API Notify:</b> Không thể kết nối hoặc phản hồi.\n<code>{html.escape(str(e))}</code>")
+        if not is_baseline_run:
+            print(f"poll_once network error: {e}")
+            tg_send(f"⚠️ <b>Lỗi Mạng API Notify:</b> Không thể kết nối hoặc phản hồi.\n<code>{html.escape(str(e))}</code>")
     except Exception as e:
-        print(f"poll_once unexpected error: {e}")
-        tg_send(f"⚠️ <b>Lỗi không mong muốn API Notify:</b>\n<code>{html.escape(str(e))}</code>")
+        if not is_baseline_run:
+            print(f"poll_once unexpected error: {e}")
+            tg_send(f"⚠️ <b>Lỗi không mong muốn API Notify:</b>\n<code>{html.escape(str(e))}</code>")
 
-# Vòng lặp Poller (thêm logic set DAILY_COUNTER_DATE)
+# [CẬP NHẬT] Vòng lặp Poller (sử dụng baseline run)
 def poller_loop():
     print("▶ Poller started (Dual-API Mode)")
     
@@ -519,11 +509,11 @@ def poller_loop():
     except Exception as e:
         print(f"Failed to send startup message: {e}")
         
-    print("Running initial chat fetch to set baseline (LAST_SEEN_CHATS)...")
+    print("Running initial chat fetch to set baseline (SEEN_CHAT_DATES)...")
     fetch_chats(is_baseline_run=True)
     
-    print("Running initial notify poll...")
-    poll_once()
+    print("Running initial notify poll to set baseline (LAST_NOTIFY_NUMS)...")
+    poll_once(is_baseline_run=True)
     
     global DAILY_COUNTER_DATE
     if not DAILY_COUNTER_DATE:
@@ -532,18 +522,16 @@ def poller_loop():
         ).strftime("%Y-%m-%d")
         print(f"Baseline date set to: {DAILY_COUNTER_DATE}")
     
+    print("--- Baseline complete. Starting main loop. ---")
     while True:
         time.sleep(POLL_INTERVAL)
-        poll_once()
+        poll_once(is_baseline_run=False)
 
 # =================== API endpoints ===================
 
-# [CẬP NHẬT] Giao diện web
+# Giao diện web
 @app.get("/", response_class=HTMLResponse)
 async def get_curl_ui():
-    """
-    Trả về giao diện HTML "siêu chuyên nghiệp" để dán 2 cURL và cấu hình lời chúc.
-    """
     global GREETING_ENABLED, GREETING_IMAGE_LINKS, DEFAULT_IMAGE_LINKS
     
     links_to_show = GREETING_IMAGE_LINKS if GREETING_IMAGE_LINKS else DEFAULT_IMAGE_LINKS
@@ -672,7 +660,7 @@ async def get_curl_ui():
     <body>
         <div class="container">
             <div class="card">
-                <h1><span>⚙️</span>Trình Cập Nhật Poller (v5.1)</h1>
+                <h1><span>⚙️</span>Trình Cập Nhật Poller (v5.2)</h1>
                 <p class="description">Dán cURL và cấu hình lời chúc 0h tại đây.</p>
                 
                 <form id="config-form">
@@ -718,7 +706,7 @@ async def get_curl_ui():
                 </div>
             </div>
             
-            <p class="footer-text">TapHoaMMO Poller Service 5.1 (Cache Fix)</p>
+            <p class="footer-text">TapHoaMMO Poller Service 5.2 (Fix Message Logic)</p>
         </div>
         
         <script>
@@ -841,21 +829,20 @@ def debug_notify(secret: str):
     if secret != WEBHOOK_SECRET:
         raise HTTPException(status_code=401, detail="unauthorized")
     before = str(LAST_NOTIFY_NUMS) 
-    poll_once()
+    poll_once(is_baseline_run=False) # Chạy test ở chế độ "không phải baseline"
     after = str(LAST_NOTIFY_NUMS)
     return {
         "ok": True, "last_before": before, "last_after": after,
         "daily_stats": DAILY_ORDER_COUNT
     }
 
-# [THÊM MỚI] Endpoint Test lời chúc
+# Endpoint Test lời chúc
 @app.post("/debug/test-greeting")
 async def debug_test_greeting(secret: str):
     if secret != WEBHOOK_SECRET:
         raise HTTPException(status_code=401, detail="unauthorized")
     
     try:
-        # Lấy ngày giờ hiện tại (hoặc ngày cuối cùng nếu có)
         date_to_show = DAILY_COUNTER_DATE or datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=7))).strftime("%Y-%m-%d")
         
         # Gửi test với số đơn hiện tại
@@ -867,7 +854,7 @@ async def debug_test_greeting(secret: str):
         raise HTTPException(status_code=500, detail=f"Lỗi khi gửi test: {e}")
 
 
-# [CẬP NHẬT] Endpoint set-config (thay thế set-curl)
+# Endpoint set-config (thay thế set-curl)
 @app.post("/debug/set-config")
 async def debug_set_config(req: Request, secret: str):
     if secret != WEBHOOK_SECRET:
