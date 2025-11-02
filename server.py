@@ -84,6 +84,10 @@ DAILY_ORDER_COUNT = defaultdict(int)
 DAILY_COUNTER_DATE = ""              
 SEEN_CHAT_DATES: set[str] = set()
 
+# [THÊM MỚI] Biến trạng thái để chống spam lỗi
+LAST_ERROR_TIMES = defaultdict(float)
+ERROR_COOLDOWN_SECONDS = 3600 # 1 giờ
+
 # =================== Telegram ===================
 def tg_send(text: str, photo_url: Optional[str] = None):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
@@ -116,10 +120,12 @@ def tg_send(text: str, photo_url: Optional[str] = None):
             r = requests.post(api_url, json=payload, timeout=30)
             if r.status_code >= 400:
                 print(f"Telegram photo error: {r.status_code} {r.text}")
+                # Nếu gửi ảnh lỗi, thử gửi chữ (không đệ quy vô hạn)
                 tg_send(text, photo_url=None)
             return
         except Exception as e:
             print(f"Error sending photo: {e}")
+            # Nếu gửi ảnh lỗi, thử gửi chữ
             tg_send(text, photo_url=None)
             return
 
@@ -137,7 +143,20 @@ def tg_send(text: str, photo_url: Optional[str] = None):
         r_text = requests.post(api_url, json=payload, timeout=20)
         if r_text.status_code >= 400:
             print(f"Telegram text error: {r_text.status_code} {r_text.text}")
+            # Dừng gửi nếu có lỗi
             break
+
+# [THÊM MỚI] Hàm kiểm tra Cooldown Lỗi
+def can_send_error(error_key: str) -> bool:
+    """Kiểm tra xem có nên gửi thông báo lỗi hay không, dựa trên thời gian cooldown."""
+    global LAST_ERROR_TIMES, ERROR_COOLDOWN_SECONDS
+    current_time = time.time()
+    last_sent_time = LAST_ERROR_TIMES[error_key]
+    
+    if (current_time - last_sent_time) > ERROR_COOLDOWN_SECONDS:
+        LAST_ERROR_TIMES[error_key] = current_time
+        return True
+    return False
 
 # Hàm gửi lời chúc 0h
 def send_good_morning_message(old_date: str, counts: defaultdict):
@@ -280,8 +299,10 @@ def fetch_chats(is_baseline_run: bool = False) -> List[Dict[str, str]]:
         except requests.exceptions.JSONDecodeError:
             error_msg = f"[ERROR] Chat API (getNewConversion) did not return valid JSON. Status: {r.status_code}, Response: {r.text[:200]}..."
             print(error_msg)
-            if not is_baseline_run:
-                tg_send(f"⚠️ <b>Lỗi API Chat:</b> Phản hồi không phải JSON (có thể do cookie/token sai).\n<code>{html.escape(r.text[:200])}</code>")
+            
+            # [FIX] Rút gọn, không gửi HTML dump và chống spam
+            if not is_baseline_run and can_send_error("CHAT_JSON_DECODE"):
+                tg_send(f"⚠️ <b>Lỗi API Chat:</b> Phản hồi không phải JSON (có thể do cookie/token sai). Lỗi sẽ chỉ báo lại sau 1 giờ.")
             return []
 
         if not isinstance(data, list):
@@ -322,12 +343,16 @@ def fetch_chats(is_baseline_run: bool = False) -> List[Dict[str, str]]:
     except requests.exceptions.RequestException as e:
         if not is_baseline_run:
              print(f"fetch_chats network error: {e}")
-             tg_send(f"⚠️ <b>Lỗi Mạng API Chat:</b> Không thể kết nối hoặc phản hồi.\n<code>{html.escape(str(e))}</code>")
+             # [FIX] Rút gọn, không gửi chi tiết lỗi và chống spam
+             if can_send_error("CHAT_NETWORK_ERROR"):
+                tg_send(f"⚠️ <b>Lỗi Mạng API Chat:</b> Không thể kết nối. Lỗi sẽ chỉ báo lại sau 1 giờ.")
         return []
     except Exception as e:
         if not is_baseline_run:
             print(f"fetch_chats unexpected error: {e}")
-            tg_send(f"⚠️ <b>Lỗi không mong muốn API Chat:</b>\n<code>{html.escape(str(e))}</code>")
+            # [FIX] Rút gọn, không gửi chi tiết lỗi và chống spam
+            if can_send_error("CHAT_UNEXPECTED_ERROR"):
+                tg_send(f"⚠️ <b>Lỗi không mong muốn API Chat:</b> Đã có lỗi xảy ra. Lỗi sẽ chỉ báo lại sau 1 giờ.")
         return []
 
 # [CẬP NHẬT v6.1] Hàm Poller (Fix lỗi 'labels' not defined)
@@ -347,8 +372,9 @@ def poll_once(is_baseline_run: bool = False):
 
         low = text[:200].lower()
         if low.startswith("<!doctype") or "<html" in low:
-            if text != str(LAST_NOTIFY_NUMS) and not is_baseline_run:
-                tg_send("⚠️ <b>getNotify trả về HTML</b> (Cookie/Header hết hạn?).")
+            # [FIX] Chống spam lỗi HTML
+            if text != str(LAST_NOTIFY_NUMS) and not is_baseline_run and can_send_error("NOTIFY_HTML_ERROR"):
+                tg_send("⚠️ <b>getNotify trả về HTML</b> (Cookie/Header hết hạn?). Lỗi sẽ chỉ báo lại sau 1 giờ.")
             if not is_baseline_run: print("HTML detected, probably headers/cookie expired.")
             return
         
@@ -446,7 +472,8 @@ def poll_once(is_baseline_run: bool = False):
             LAST_NOTIFY_NUMS = current_nums
         
         else:
-            if text != str(LAST_NOTIFY_NUMS) and not is_baseline_run:
+            # [FIX] Chống spam lỗi (non-numeric)
+            if text != str(LAST_NOTIFY_NUMS) and not is_baseline_run and can_send_error("NOTIFY_NON_NUMERIC"):
                 msg = f"🔔 <b>TapHoaMMO getNotify (lỗi)</b>\n<code>{html.escape(text)}</code>"
                 tg_send(msg)
                 print("getNotify (non-numeric) changed -> Telegram sent.")
@@ -454,11 +481,15 @@ def poll_once(is_baseline_run: bool = False):
     except requests.exceptions.RequestException as e:
         if not is_baseline_run:
             print(f"poll_once network error: {e}")
-            tg_send(f"⚠️ <b>Lỗi Mạng API Notify:</b> Không thể kết nối hoặc phản hồi.\n<code>{html.escape(str(e))}</code>")
+            # [FIX] Rút gọn, không gửi chi tiết lỗi và chống spam
+            if can_send_error("NOTIFY_NETWORK_ERROR"):
+                tg_send(f"⚠️ <b>Lỗi Mạng API Notify:</b> Không thể kết nối. Lỗi sẽ chỉ báo lại sau 1 giờ.")
     except Exception as e:
         if not is_baseline_run:
             print(f"poll_once unexpected error: {e}")
-            tg_send(f"⚠️ <b>Lỗi không mong muốn API Notify:</b>\n<code>{html.escape(str(e))}</code>")
+            # [FIX] Rút gọn, không gửi chi tiết lỗi và chống spam
+            if can_send_error("NOTIFY_UNEXPECTED_ERROR"):
+                tg_send(f"⚠️ <b>Lỗi không mong muốn API Notify:</b> Đã có lỗi xảy ra. Lỗi sẽ chỉ báo lại sau 1 giờ.")
 
 # Vòng lặp Poller
 def poller_loop():
@@ -499,7 +530,7 @@ def poller_loop():
 # [THÊM MỚI v6.0] Hàm logic khôi phục
 def _apply_restore(new_config_data: Dict[str, Any]) -> bool:
     global GLOBAL_CONFIG, LAST_NOTIFY_NUMS, DAILY_ORDER_COUNT
-    global DAILY_COUNTER_DATE, SEEN_CHAT_DATES
+    global DAILY_COUNTER_DATE, SEEN_CHAT_DATES, LAST_ERROR_TIMES
     
     # --- Kiểm tra dữ liệu backup ---
     if "notify_curl" not in new_config_data or "chat_curl" not in new_config_data:
@@ -526,6 +557,7 @@ def _apply_restore(new_config_data: Dict[str, Any]) -> bool:
     DAILY_ORDER_COUNT.clear()
     DAILY_COUNTER_DATE = "" 
     SEEN_CHAT_DATES.clear()
+    LAST_ERROR_TIMES.clear() # [FIX] Reset bộ đếm lỗi
     
     print("--- CONFIG RESTORED BY UI ---")
     print(f"Notify API set to: {GLOBAL_CONFIG['notify_api'].get('url')}")
@@ -1198,7 +1230,7 @@ async def debug_set_config(req: Request, secret: str):
 
     # --- 2. Áp dụng Cấu hình ---
     global GLOBAL_CONFIG, LAST_NOTIFY_NUMS, DAILY_ORDER_COUNT
-    global DAILY_COUNTER_DATE, SEEN_CHAT_DATES
+    global DAILY_COUNTER_DATE, SEEN_CHAT_DATES, LAST_ERROR_TIMES
     
     GLOBAL_CONFIG["notify_curl"] = curl_notify_txt
     GLOBAL_CONFIG["chat_curl"] = curl_chat_txt
@@ -1213,6 +1245,7 @@ async def debug_set_config(req: Request, secret: str):
     DAILY_ORDER_COUNT.clear()
     DAILY_COUNTER_DATE = "" 
     SEEN_CHAT_DATES.clear()
+    LAST_ERROR_TIMES.clear() # [FIX] Reset bộ đếm lỗi
     
     print("--- CONFIG UPDATED BY UI ---")
     print(f"Notify API set to: {GLOBAL_CONFIG['notify_api'].get('url')}")
