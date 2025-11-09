@@ -986,7 +986,8 @@ async def get_curl_ui():
                 <div id="file-name" style="text-align: center; margin-top: 1rem;">Chưa chọn file nào.</div>
 
                 <div id="backup-status" class="status-message">
-                    <strong></strong> <span id="backup-status-body"></span>
+                    <strong></strong>
+                    <span id="backup-status-body"></span>
                 </div>
             </div>
             
@@ -1169,7 +1170,8 @@ async def get_curl_ui():
                         }}
                     }}
                     
-                    showMainStatus('success', `Đã tải thành công ${{{Object.keys(config.accounts || {}).length}}} tài khoản.`);
+                    // [SỬA LỖI Ở DÒNG NÀY] - Đã sửa từ {{{...}}} thành {{...}}
+                    showMainStatus('success', `Đã tải thành công ${{Object.keys(config.accounts || {}).length}} tài khoản.`);
                     setTimeout(() => mainStatusEl.classList.remove('show'), 3000);
                     
                 }} catch (err) {{
