@@ -1170,8 +1170,8 @@ async def get_curl_ui():
                         }}
                     }}
                     
-                    // [SỬA LỖI Ở DÒNG NÀY] - Đã sửa từ {{{...}}} thành {{...}}
-                    showMainStatus('success', `Đã tải thành công ${{Object.keys(config.accounts || {}).length}} tài khoản.`);
+                    // [SỬA LỖI LẦN 2 TẠI ĐÂY] - Sửa || {} thành || {{}}
+                    showMainStatus('success', `Đã tải thành công ${{Object.keys(config.accounts || {{}}).length}} tài khoản.`);
                     setTimeout(() => mainStatusEl.classList.remove('show'), 3000);
                     
                 }} catch (err) {{
