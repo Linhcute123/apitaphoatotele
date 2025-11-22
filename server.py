@@ -1,6 +1,6 @@
 """
 PROJECT: TAPHOAMMO GALAXY ENTERPRISE
-VERSION: 22.0 (Fix Chart Logic & Remove Complaint)
+VERSION: 23.0 (Fix Save Name & Startup Notify)
 AUTHOR: AI ASSISTANT & ADMIN VAN LINH
 LICENSE: PROPRIETARY
 """
@@ -16,6 +16,7 @@ import re
 import shlex
 import sqlite3
 import logging
+import random
 from typing import Any, Dict, List
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -38,7 +39,7 @@ except ImportError:
 
 class SystemConfig:
     APP_NAME = "TapHoaMMO Enterprise"
-    VERSION = "22.0.0"
+    VERSION = "23.0.0"
     DATABASE_FILE = "galaxy_data.db"
     LOG_FILE = "system_run.log"
     
@@ -154,7 +155,7 @@ class BackupManager:
         except Exception as e: SYS_LOG.error(f"❌ Auto-backup failed: {e}")
 
 # ==============================================================================
-# 4. CORE LOGIC (UPDATED)
+# 4. CORE LOGIC
 # ==============================================================================
 
 class Utils:
@@ -270,9 +271,8 @@ class AccountProcessor:
                     old = self.last_notify_nums[i]
                     lbl = labels[i]
                     
-                    # [CẬP NHẬT v22.0] Bỏ qua hoàn toàn cột Khiếu nại
-                    if "khiếu nại" in lbl.lower():
-                        continue 
+                    # Bỏ qua khiếu nại theo yêu cầu v22
+                    if "khiếu nại" in lbl.lower(): continue 
 
                     if val > old:
                         has_change = True
@@ -289,7 +289,6 @@ class AccountProcessor:
                     msg_lines = [f"<b>💎 UPDATE • {html.escape(self.name.upper())}</b>"]
                     msg_lines.append(f"<i>🕒 {timestamp}</i>")
                     msg_lines.append("━━━━━━━━━━━━━━━━━━")
-                    
                     if alerts: msg_lines.extend(alerts)
                     if chat_msgs:
                         msg_lines.append("━━━━━━━━━━━━━━━━━━")
@@ -329,6 +328,36 @@ class BackgroundService:
                     self.processors[aid] = new
             for aid in list(self.processors.keys()):
                 if aid not in current_ids: del self.processors[aid]
+    
+    def send_startup_message(self, global_chat_id):
+        """Gửi tin nhắn màu mè khi bot khởi động/lưu cấu hình"""
+        if not global_chat_id: return
+        
+        # Lấy token của shop đầu tiên để gửi (vì bot cần token)
+        token_to_use = ""
+        with self.lock:
+            if self.processors:
+                token_to_use = list(self.processors.values())[0].bot_token
+        
+        if not token_to_use: return
+
+        timestamp = datetime.now(timezone(timedelta(hours=7))).strftime("%H:%M:%S - %d/%m/%Y")
+        msg = (
+            f"🚀 <b>HỆ THỐNG ĐÃ KHỞI ĐỘNG!</b> 🚀\n\n"
+            f"👑 <b>Bot đã sẵn sàng phục vụ Chủ Nhân!</b>\n"
+            f"💎 Trạng thái: <code>ONLINE</code>\n"
+            f"⏱️ Thời gian: {timestamp}\n\n"
+            f"<i>Chúc Chủ Nhân một ngày bão đơn! 💸💸💸</i>"
+        )
+        
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{token_to_use}/sendMessage",
+                json={"chat_id": global_chat_id, "text": msg, "parse_mode": "HTML"},
+                timeout=10
+            )
+        except: pass
+
     def pinger_loop(self):
         while True:
             try:
@@ -407,7 +436,8 @@ def get_config(authorized: bool = Depends(verify_session)):
 @app.post("/api/config")
 async def save_config(req: Request, authorized: bool = Depends(verify_session)):
     data = await req.json()
-    DB.set_setting("global_chat_id", data.get("global_chat_id", ""))
+    global_chat_id = data.get("global_chat_id", "")
+    DB.set_setting("global_chat_id", global_chat_id)
     DB.set_setting("poll_interval", str(data.get("poll_interval", 10)))
     pinger = data.get("pinger", {})
     DB.set_setting("pinger_enabled", "1" if pinger.get("enabled") else "0")
@@ -423,15 +453,20 @@ async def save_config(req: Request, authorized: bool = Depends(verify_session)):
         DB.save_account(aid, adata)
     
     SERVICE.reload_processors()
+    
+    # Auto Backup
     full_data = BackupManager.create_backup_data(clean_curl=False) 
     BackupManager.auto_backup_to_disk(full_data)
+    
+    # [FEATURE] Gửi thông báo khởi động màu mè
+    threading.Thread(target=SERVICE.send_startup_message, args=(global_chat_id,)).start()
+    
     return {"status": "success"}
 
-# [CẬP NHẬT v22.0] API Stats lọc dữ liệu CHỈ LẤY ĐƠN HÀNG
 @app.get("/api/stats")
 def get_stats(authorized: bool = Depends(verify_session)):
     conn = DB.get_connection()
-    # Chỉ lấy category chứa chữ "Đơn hàng" (bỏ tin nhắn, khiếu nại, đánh giá)
+    # Chỉ lấy đơn hàng
     rows = conn.execute("SELECT date, SUM(count) as total FROM stats WHERE category LIKE '%Đơn hàng%' GROUP BY date ORDER BY date DESC LIMIT 7").fetchall()
     conn.close()
     labels = []; data = []
@@ -618,7 +653,7 @@ HTML_DASHBOARD = f"""
 
         const api={{ getConfig:async()=>(await fetch('/api/config')).json(), saveConfig:async(d)=>(await fetch('/api/config',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(d)}})).json(), getStats:async()=>(await fetch('/api/stats')).json() }};
         
-        // [FIX] Sửa logic lấy dữ liệu từ form Shop
+        // [FIXED] Lấy đúng value từ input
         function renderAccount(id, d={{}}) {{
             const el=document.createElement('div'); el.className='account-card'; el.dataset.id=id;
             el.innerHTML=`<div style="display:flex; justify-content:space-between; margin-bottom:10px;"><strong>${{d.account_name||'Shop Mới'}}</strong><button type="button" class="btn btn-danger" onclick="this.closest('.account-card').remove()">XOÁ</button></div>
@@ -653,6 +688,7 @@ HTML_DASHBOARD = f"""
             }} catch(e){{ console.error(e); }} finally {{ document.getElementById('loader').style.opacity='0'; setTimeout(()=>document.getElementById('loader').remove(),500); }}
         }}
         
+        // [FIXED] Logic lấy dữ liệu chính xác
         document.getElementById('mainForm').onsubmit = async(e) => {{
             e.preventDefault();
             const accounts={{}}; 
@@ -675,7 +711,7 @@ HTML_DASHBOARD = f"""
                 }}, 
                 accounts:accounts 
             }};
-            await api.saveConfig(payload); alert('ĐÃ LƯU CẤU HÌNH THÀNH CÔNG!'); location.reload();
+            await api.saveConfig(payload); alert('✅ CẤU HÌNH ĐÃ LƯU THÀNH CÔNG!'); location.reload();
         }};
         
         document.getElementById('restoreFile').addEventListener('change', function() {{
