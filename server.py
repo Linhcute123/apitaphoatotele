@@ -31,7 +31,7 @@ GLOBAL_STATE = {
 ERROR_COOLDOWN_SECONDS = 3600 
 
 # =================== APP FASTAPI ===================
-app = FastAPI(title="TapHoaMMO Bot v12.1")
+app = FastAPI(title="TapHoaMMO Galaxy Bot v13.0")
 
 # =================== HÀM HỖ TRỢ ===================
 
@@ -108,11 +108,14 @@ def parse_curl_command(curl_text: str) -> Dict[str, Any]:
         i += 1
 
     if method == "GET" and data: method = "POST"
+    # Lọc header rác
     final_headers = {k: v for k, v in headers.items() if not k.lower().startswith(('content-length', 'host'))}
+    
     body_json = None
     if data:
         try: body_json = json.loads(data)
         except: pass
+    
     return {"url": url, "method": method, "headers": final_headers, "body_json": body_json, "body_data": data if not body_json else None}
 
 def _make_api_request(config: Dict[str, Any]) -> requests.Response:
@@ -158,7 +161,7 @@ def poll_once(acc_id: str, acc_data: dict, chat_id: str, is_baseline: bool = Fal
         if not text: return
         if "<html" in text.lower() or "<!doctype" in text.lower():
             if not is_baseline and can_send_error("NOTIFY_HTML", acc_data):
-                tg_send(f"⚠️ <b>[{html.escape(acc_name)}] Cookie hết hạn (HTML).</b> Vui lòng cập nhật cURL.", token, chat_id)
+                tg_send(f"⚠️ <b>[{html.escape(acc_name)}] Cookie hết hạn (HTML).</b>", token, chat_id)
             return
         
         parsed = parse_notify_text(text)
@@ -247,7 +250,7 @@ def poller_loop():
                 if "state_last_notify_nums" in adata: poll_once(aid, adata, chat_id, False)
         except: time.sleep(60)
 
-# =================== WEB UI & CONFIG ===================
+# =================== CONFIG ===================
 def _create_state():
     return {
         "notify_api": {}, "chat_api": {}, "state_last_notify_nums": [],
@@ -273,7 +276,6 @@ def _restore(data: dict):
         new_accs[aid] = adata
     GLOBAL_STATE["accounts"] = new_accs
 
-# [FIX] Thêm endpoint healthz để Render không báo lỗi 404
 @app.get("/healthz")
 def health_check():
     return {"status": "ok"}
@@ -286,68 +288,194 @@ async def ui():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>TapHoaMMO Bot v12.1</title>
+        <title>TapHoaMMO Galaxy Control</title>
+        <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Roboto:wght@300;400;500&display=swap" rel="stylesheet">
         <style>
-            :root {{ --bg: #f8f9fa; --card: #ffffff; --primary: #0d6efd; --danger: #dc3545; }}
-            body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg); padding: 20px; margin: 0; color: #333; }}
-            .container {{ max-width: 800px; margin: 0 auto; }}
-            .card {{ background: var(--card); padding: 25px; border-radius: 10px; margin-bottom: 20px; border: 1px solid #eee; }}
-            h2 {{ margin-top: 0; font-size: 18px; border-bottom: 2px solid #f0f0f0; padding-bottom: 15px; margin-bottom: 20px; color: #0d6efd; }}
-            label {{ font-weight: 600; font-size: 13px; display: block; margin-bottom: 6px; color: #555; }}
-            input, textarea, select {{ width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; margin-bottom: 15px; font-size: 14px; }}
-            .row {{ display: flex; gap: 15px; }}
+            :root {{
+                --bg-deep: #050510;
+                --card-bg: rgba(20, 20, 40, 0.7);
+                --neon-blue: #00f3ff;
+                --neon-purple: #bc13fe;
+                --text: #e0e0ff;
+                --border-glow: rgba(0, 243, 255, 0.3);
+            }}
+            
+            body {{
+                margin: 0; padding: 20px;
+                background: radial-gradient(circle at center, #1a1a3a 0%, #000000 100%);
+                color: var(--text);
+                font-family: 'Roboto', sans-serif;
+                min-height: 100vh;
+                overflow-x: hidden;
+            }}
+
+            /* Hiệu ứng Sao Băng */
+            .stars {{ position: fixed; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: -1; }}
+            .star {{
+                position: absolute; top: 50%; left: 50%; width: 2px; height: 2px;
+                background: #fff; border-radius: 50%;
+                box-shadow: 0 0 0 4px rgba(255,255,255,0.1), 0 0 0 8px rgba(255,255,255,0.1);
+                animation: animate 3s linear infinite;
+            }}
+            .star::before {{
+                content: ''; position: absolute; top: 50%; transform: translateY(-50%);
+                width: 300px; height: 1px;
+                background: linear-gradient(90deg, #fff, transparent);
+            }}
+            @keyframes animate {{
+                0% {{ transform: rotate(315deg) translateX(0); opacity: 1; }}
+                70% {{ opacity: 1; }}
+                100% {{ transform: rotate(315deg) translateX(-1000px); opacity: 0; }}
+            }}
+
+            .container {{ max-width: 900px; margin: 0 auto; position: relative; z-index: 1; }}
+
+            h1 {{
+                font-family: 'Orbitron', sans-serif;
+                text-align: center;
+                font-size: 2.5rem;
+                background: linear-gradient(to right, var(--neon-blue), var(--neon-purple));
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                text-shadow: 0 0 20px rgba(0, 243, 255, 0.5);
+                margin-bottom: 40px;
+            }}
+
+            .card {{
+                background: var(--card-bg);
+                backdrop-filter: blur(15px);
+                -webkit-backdrop-filter: blur(15px);
+                border: 1px solid var(--border-glow);
+                border-radius: 16px;
+                padding: 30px;
+                margin-bottom: 30px;
+                box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
+            }}
+
+            h2 {{
+                color: var(--neon-blue);
+                font-family: 'Orbitron', sans-serif;
+                font-size: 1.2rem;
+                border-bottom: 1px solid var(--border-glow);
+                padding-bottom: 10px;
+                margin-top: 0;
+            }}
+
+            label {{ display: block; margin: 15px 0 5px; font-weight: 500; color: #a0a0c0; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 1px; }}
+
+            input, textarea, select {{
+                width: 100%; background: rgba(0,0,0,0.4);
+                border: 1px solid #333; color: #fff;
+                padding: 12px; border-radius: 6px;
+                box-sizing: border-box; font-family: monospace;
+                transition: 0.3s;
+            }}
+            input:focus, textarea:focus, select:focus {{
+                border-color: var(--neon-blue);
+                box-shadow: 0 0 10px rgba(0, 243, 255, 0.2);
+                outline: none;
+            }}
+
+            button {{
+                background: linear-gradient(135deg, var(--neon-blue), var(--neon-purple));
+                border: none; color: white;
+                padding: 15px 30px; border-radius: 8px;
+                font-weight: bold; cursor: pointer;
+                font-family: 'Orbitron', sans-serif;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+                transition: 0.3s;
+                box-shadow: 0 0 15px rgba(188, 19, 254, 0.4);
+            }}
+            button:hover {{ transform: translateY(-2px); box-shadow: 0 0 25px rgba(188, 19, 254, 0.7); }}
+            
+            .btn-sec {{ background: rgba(255,255,255,0.1); box-shadow: none; }}
+            .btn-sec:hover {{ background: rgba(255,255,255,0.2); }}
+            
+            .btn-danger {{
+                background: rgba(255, 0, 50, 0.2); color: #ff4d4d;
+                border: 1px solid #ff4d4d; padding: 5px 10px;
+                font-size: 0.8rem; position: absolute; top: 20px; right: 20px;
+                box-shadow: none;
+            }}
+            .btn-danger:hover {{ background: rgba(255, 0, 50, 0.4); }}
+
+            .row {{ display: flex; gap: 20px; }}
             .col {{ flex: 1; }}
-            button {{ padding: 12px 20px; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; transition: 0.2s; }}
-            .btn-primary {{ background: var(--primary); color: white; width: 100%; }}
-            .btn-sec {{ background: #e9ecef; color: #333; }}
-            .btn-danger {{ background: #fff5f5; color: var(--danger); padding: 6px 12px; border: 1px solid #ffdcdc; position: absolute; top: 15px; right: 15px; }}
-            .account-item {{ border: 1px solid #e0e0e0; padding: 20px; border-radius: 8px; position: relative; margin-bottom: 20px; background: #fff; }}
-            .ping-box {{ background: #f0f7ff; padding: 15px; border-radius: 8px; border: 1px solid #cce5ff; margin-top: 15px; }}
+
+            .account-item {{
+                background: rgba(255,255,255,0.03);
+                border: 1px solid rgba(255,255,255,0.1);
+                border-radius: 12px; padding: 25px;
+                margin-bottom: 20px; position: relative;
+            }}
+            
+            /* Pinger Module */
+            .pinger-box {{
+                background: rgba(0, 243, 255, 0.05);
+                border: 1px solid var(--neon-blue);
+                padding: 20px; border-radius: 12px; margin-top: 20px;
+            }}
+            .pinger-header {{ color: var(--neon-blue); font-weight: bold; font-family: 'Orbitron'; margin-bottom: 15px; display: block; }}
+
+            @media (max-width: 600px) {{ .row {{ flex-direction: column; }} }}
         </style>
     </head>
     <body>
+        <div class="stars">
+            <div class="star" style="top: 10%; left: 20%; animation-duration: 3s;"></div>
+            <div class="star" style="top: 30%; left: 80%; animation-duration: 4s;"></div>
+            <div class="star" style="top: 70%; left: 40%; animation-duration: 2.5s;"></div>
+        </div>
+
         <div class="container">
+            <h1>TAPHOAMMO GALAXY</h1>
+            
             <form id="frm">
                 <div class="card">
-                    <h2>⚙️ Cấu hình Hệ thống</h2>
-                    <label>Telegram Chat ID:</label>
-                    <input type="text" id="gid" placeholder="-100xxxxx" required>
-                    <div class="ping-box">
-                        <label style="color: #004085;">📡 Cấu hình Ping (Giữ Server Sống)</label>
+                    <h2>🔮 TRUNG TÂM ĐIỀU KHIỂN</h2>
+                    <label>Mã Telegram (Chat ID):</label>
+                    <input type="text" id="gid" placeholder="-100xxxxxxxx" required>
+
+                    <div class="pinger-box">
+                        <span class="pinger-header">📡 TRẠM PHÁT SÓNG (PINGER)</span>
                         <div class="row">
-                            <div style="width: 100px;">
-                                <label>Bật/Tắt:</label>
-                                <select id="p_enable"><option value="0">Tắt</option><option value="1">Bật</option></select>
+                            <div style="flex: 1;">
+                                <label>Trạng thái:</label>
+                                <select id="p_enable">
+                                    <option value="0">🔴 TẮT</option>
+                                    <option value="1">🟢 BẬT</option>
+                                </select>
                             </div>
-                            <div class="col">
-                                <label>Chu kỳ (Giây):</label>
+                            <div style="flex: 2;">
+                                <label>Tần suất (Giây):</label>
                                 <input type="number" id="p_interval" value="300">
                             </div>
                         </div>
-                        <label>URL trang web này:</label>
-                        <input type="text" id="p_url" placeholder="https://ten-app.onrender.com" style="margin-bottom:0;">
+                        <label>URL Vệ Tinh (Link Web Render):</label>
+                        <input type="text" id="p_url" placeholder="https://your-app.onrender.com" style="margin-bottom:0;">
                     </div>
                 </div>
 
                 <div class="card">
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
-                        <h2 style="border:none; margin:0; padding:0;">🛒 Danh sách Shop</h2>
-                        <button type="button" class="btn-sec" onclick="addAcc()">+ Thêm Shop</button>
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:15px;">
+                        <h2 style="border:none; margin:0;">🚀 DANH SÁCH SHOP</h2>
+                        <button type="button" class="btn-sec" onclick="addAcc()">+ THÊM SHOP</button>
                     </div>
                     <div id="list"></div>
                 </div>
 
-                <div style="position:sticky; bottom:20px; z-index: 10;">
-                    <button type="submit" class="btn-primary">💾 Lưu Cấu Hình</button>
+                <div style="position:sticky; bottom:20px; z-index:100;">
+                    <button type="submit" style="width:100%">💾 KHỞI ĐỘNG HỆ THỐNG</button>
                 </div>
             </form>
-            
-            <div class="card" style="margin-top: 40px;">
-                <h2>📦 Backup / Restore</h2>
-                <textarea id="bkp" rows="3" placeholder="Dữ liệu JSON..."></textarea>
+
+            <div class="card" style="margin-top: 50px;">
+                <h2>💾 KHO DỮ LIỆU (BACKUP)</h2>
+                <textarea id="bkp" rows="4" placeholder="Dữ liệu JSON backup..."></textarea>
                 <div class="row">
-                    <button type="button" class="btn-sec col" onclick="getBackup()">⬇️ Lấy Backup</button>
-                    <button type="button" class="btn-sec col" onclick="restBackup()">⬆️ Restore</button>
+                    <button type="button" class="btn-sec col" onclick="getBackup()">⬇️ TRÍCH XUẤT DỮ LIỆU</button>
+                    <button type="button" class="btn-sec col" onclick="restBackup()">⬆️ NẠP DỮ LIỆU</button>
                 </div>
             </div>
         </div>
@@ -358,17 +486,18 @@ async def ui():
                 div.className = 'account-item';
                 div.dataset.id = id;
                 div.innerHTML = `
-                    <button type="button" class="btn-danger" onclick="this.parentElement.remove()">🗑️ Xóa</button>
+                    <button type="button" class="btn-danger" onclick="this.parentElement.remove()">HUỶ SHOP</button>
                     <div class="row">
-                        <div class="col"><label>Tên Shop:</label><input type="text" class="n" value="${{d.account_name||''}}" required></div>
-                        <div class="col"><label>Bot Token:</label><input type="password" class="t" value="${{d.bot_token||''}}" required></div>
+                        <div class="col"><label>Tên Shop:</label><input type="text" class="n" value="${{d.account_name||''}}" placeholder="Shop Alpha..." required></div>
+                        <div class="col"><label>Bot Token:</label><input type="password" class="t" value="${{d.bot_token||''}}" placeholder="123:XYZ..." required></div>
                     </div>
-                    <label>cURL Notify:</label><textarea class="cn" rows="2">${{d.notify_curl||''}}</textarea>
-                    <label>cURL Chat:</label><textarea class="cc" rows="2">${{d.chat_curl||''}}</textarea>
+                    <label>Lệnh cURL Thông báo (getNotify):</label><textarea class="cn" rows="3">${{d.notify_curl||''}}</textarea>
+                    <label>Lệnh cURL Tin nhắn (getNewConversion):</label><textarea class="cc" rows="3">${{d.chat_curl||''}}</textarea>
                 `;
                 document.getElementById('list').appendChild(div);
             }}
             function addAcc() {{ renAcc(crypto.randomUUID()); }}
+            
             async function load() {{
                 try {{
                     const res = await fetch('/debug/get-backup');
@@ -383,6 +512,7 @@ async def ui():
                     if(d.accounts) Object.entries(d.accounts).forEach(([k,v])=>renAcc(k,v));
                 }} catch(e) {{}}
             }}
+
             document.getElementById('frm').onsubmit = async (e) => {{
                 e.preventDefault();
                 const accs = {{}};
@@ -407,8 +537,9 @@ async def ui():
                     method: 'POST', headers: {{'Content-Type': 'application/json'}},
                     body: JSON.stringify(payload)
                 }});
-                alert('✅ Đã lưu thành công!'); load();
+                alert('✅ HỆ THỐNG ĐÃ ĐƯỢC CẬP NHẬT!'); load();
             }};
+
             async function getBackup() {{
                 const d = await (await fetch('/debug/get-backup')).json();
                 document.getElementById('bkp').value = JSON.stringify(d, null, 2);
@@ -419,8 +550,8 @@ async def ui():
                     await fetch('/debug/set-config', {{
                         method: 'POST', headers: {{'Content-Type': 'application/json'}}, body: JSON.stringify(d)
                     }});
-                    alert('✅ Restore thành công!'); location.reload();
-                }} catch {{ alert('❌ JSON lỗi'); }}
+                    alert('✅ NẠP DỮ LIỆU THÀNH CÔNG!'); location.reload();
+                }} catch {{ alert('❌ DỮ LIỆU LỖI'); }}
             }}
             load();
         </script>
