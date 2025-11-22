@@ -1,6 +1,6 @@
 """
 PROJECT: TAPHOAMMO GALAXY ENTERPRISE
-VERSION: 17.0 (Bright UI & Fix Login)
+VERSION: 18.0 (Auto-Backup & Restore System)
 AUTHOR: AI ASSISTANT & ADMIN VAN LINH
 LICENSE: PROPRIETARY
 """
@@ -21,15 +21,16 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 
-# Cố gắng import FastAPI
+# Import Libraries
 try:
-    # Cần cài: pip install fastapi uvicorn requests python-dotenv python-multipart
-    from fastapi import FastAPI, Request, HTTPException, Depends, status, Form, Cookie
-    from fastapi.responses import HTMLResponse, RedirectResponse
+    # Cần cài: pip install fastapi uvicorn requests python-dotenv python-multipart aiofiles
+    from fastapi import FastAPI, Request, HTTPException, Depends, status, Form, Cookie, File, UploadFile
+    from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
+    from fastapi.security import APIKeyCookie
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
-    print("CRITICAL ERROR: Thiếu thư viện. Vui lòng chạy: pip install fastapi uvicorn requests python-dotenv python-multipart")
+    print("CRITICAL ERROR: Thiếu thư viện. Chạy: pip install fastapi uvicorn requests python-dotenv python-multipart aiofiles")
     exit(1)
 
 # ==============================================================================
@@ -38,15 +39,18 @@ except ImportError:
 
 class SystemConfig:
     APP_NAME = "TapHoaMMO Enterprise"
-    VERSION = "17.0.0"
+    VERSION = "18.0.0"
     DATABASE_FILE = "galaxy_data.db"
     LOG_FILE = "system_run.log"
     
-    # --- CẤU HÌNH BẢO MẬT ---
-    # Lấy mật khẩu từ Environment của Render.
-    # .strip() giúp loại bỏ dấu cách thừa nếu lỡ tay copy paste sai.
+    # --- BẢO MẬT ---
     ADMIN_SECRET = os.getenv("ADMIN_SECRET", "admin").strip()
     
+    # --- BACKUP ---
+    # Đường dẫn thư mục để tự động lưu file backup. 
+    # Nếu không set trong ENV, tính năng auto-backup ra file sẽ tắt.
+    BACKUP_DIR = os.getenv("BACKUP_DIR", "") 
+
     DEFAULT_POLL_INTERVAL = 10
     VERIFY_TLS = bool(int(os.getenv("VERIFY_TLS", "1")))
     DISABLE_POLLER = os.getenv("DISABLE_POLLER", "0") == "1"
@@ -66,15 +70,12 @@ class LoggerManager:
         self.logger = logging.getLogger("GalaxyBot")
         self.logger.setLevel(logging.INFO)
         formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-        # Log ra file
         file_handler = RotatingFileHandler(SystemConfig.LOG_FILE, maxBytes=5*1024*1024, backupCount=3)
         file_handler.setFormatter(formatter)
         self.logger.addHandler(file_handler)
-        # Log ra màn hình console Render
         console_handler = logging.StreamHandler()
         console_handler.setFormatter(formatter)
         self.logger.addHandler(console_handler)
-
     def info(self, msg): self.logger.info(msg)
     def error(self, msg): self.logger.error(msg)
 
@@ -122,7 +123,66 @@ class DatabaseManager:
 DB = DatabaseManager(SystemConfig.DATABASE_FILE)
 
 # ==============================================================================
-# 3. LOGIC XỬ LÝ
+# 3. BACKUP MANAGER (NEW FEATURE)
+# ==============================================================================
+
+class BackupManager:
+    @staticmethod
+    def create_backup_data(clean_curl=True):
+        """Tạo dữ liệu JSON để backup."""
+        data = {
+            "meta": {
+                "version": SystemConfig.VERSION,
+                "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "type": "clean" if clean_curl else "full"
+            },
+            "global_chat_id": DB.get_setting("global_chat_id", ""),
+            "poll_interval": int(DB.get_setting("poll_interval", "10")),
+            "pinger": {
+                "enabled": DB.get_setting("pinger_enabled") == "1",
+                "url": DB.get_setting("pinger_url", ""),
+                "interval": int(DB.get_setting("pinger_interval", "300"))
+            },
+            "accounts": {}
+        }
+        
+        accounts = DB.get_all_accounts()
+        for acc in accounts:
+            data["accounts"][acc['id']] = {
+                "account_name": acc['name'],
+                "bot_token": acc['bot_token'],
+                # Nếu clean_curl=True, ta xóa cURL đi để người dùng tự nhập lại
+                "notify_curl": "" if clean_curl else acc['notify_curl'],
+                "chat_curl": "" if clean_curl else acc['chat_curl']
+            }
+        return data
+
+    @staticmethod
+    def auto_backup_to_disk(data):
+        """Tự động lưu file vào thư mục BACKUP_DIR nếu có cấu hình."""
+        if not SystemConfig.BACKUP_DIR:
+            return # Không cấu hình thư mục thì bỏ qua
+        
+        try:
+            os.makedirs(SystemConfig.BACKUP_DIR, exist_ok=True)
+            filename = f"auto_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            filepath = os.path.join(SystemConfig.BACKUP_DIR, filename)
+            
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=4, ensure_ascii=False)
+            
+            SYS_LOG.info(f"✅ Auto-backup created: {filepath}")
+            
+            # (Optional) Xóa bớt backup cũ nếu quá nhiều, giữ lại 10 file mới nhất
+            files = sorted([os.path.join(SystemConfig.BACKUP_DIR, f) for f in os.listdir(SystemConfig.BACKUP_DIR)], key=os.path.getmtime)
+            if len(files) > 10:
+                for f in files[:-10]:
+                    os.remove(f)
+        except Exception as e:
+            SYS_LOG.error(f"❌ Auto-backup failed: {e}")
+
+# ==============================================================================
+# 4. CORE LOGIC
 # ==============================================================================
 
 class Utils:
@@ -134,12 +194,9 @@ class Utils:
         i = 0
         while i < len(args):
             a = args[i]
-            if a == "curl": 
-                i += 1; url = args[i] if i < len(args) else ""
+            if a == "curl": i += 1; url = args[i] if i < len(args) else ""
             elif a in ("-X", "--request"): i += 1; method = args[i].upper() if i < len(args) else "GET"
-            elif a in ("-H", "--header"):
-                i += 1
-                if i < len(args) and ":" in args[i]: k, v = args[i].split(":", 1); headers[k.strip()] = v.strip()
+            elif a in ("-H", "--header"): i += 1; (k, v) = args[i].split(":", 1) if ":" in args[i] else (args[i], ""); headers[k.strip()] = v.strip()
             elif a in ("-b", "--cookie"): i += 1; headers['cookie'] = args[i] if i < len(args) else ""
             elif a in ("--data", "--data-raw", "-d"): i += 1; data = args[i] if i < len(args) else None
             i += 1
@@ -309,7 +366,7 @@ class BackgroundService:
 SERVICE = BackgroundService()
 
 # ==============================================================================
-# 4. AUTH & API ROUTES
+# 5. API ROUTES
 # ==============================================================================
 
 app = FastAPI(docs_url=None, redoc_url=None)
@@ -320,19 +377,15 @@ def verify_session(session_id: str = Cookie(None)):
     return True
 
 @app.get("/login", response_class=HTMLResponse)
-def login_page():
-    return HTML_LOGIN
+def login_page(): return HTML_LOGIN
 
 @app.post("/login")
 def login_action(secret: str = Form(...)):
-    # [FIX] Thêm .strip() để loại bỏ dấu cách thừa nếu có
     if secret.strip() == SystemConfig.ADMIN_SECRET:
         resp = RedirectResponse("/", status_code=303)
         resp.set_cookie(key="session_id", value="admin_authorized", max_age=86400)
         return resp
-    # Log lỗi để debug trên Render
-    print(f"[LOGIN FAILED] Input length: {len(secret)} vs Expected: {len(SystemConfig.ADMIN_SECRET)}")
-    return HTMLResponse(content="<script>alert('❌ MẬT KHẨU SAI! Vui lòng kiểm tra Environment Variable ADMIN_SECRET trên Render.'); window.location.href='/login';</script>")
+    return HTMLResponse(content="<script>alert('❌ MẬT KHẨU SAI! Kiểm tra biến ADMIN_SECRET trên Render.'); window.location.href='/login';</script>")
 
 @app.get("/logout")
 def logout():
@@ -344,8 +397,7 @@ def logout():
 def health(): return {"status": "ok"}
 
 @app.get("/", response_class=HTMLResponse)
-def root(authorized: bool = Depends(verify_session)):
-    return HTML_DASHBOARD
+def root(authorized: bool = Depends(verify_session)): return HTML_DASHBOARD
 
 @app.get("/api/config")
 def get_config(authorized: bool = Depends(verify_session)):
@@ -363,6 +415,8 @@ def get_config(authorized: bool = Depends(verify_session)):
 @app.post("/api/config")
 async def save_config(req: Request, authorized: bool = Depends(verify_session)):
     data = await req.json()
+    
+    # 1. Lưu cấu hình
     DB.set_setting("global_chat_id", data.get("global_chat_id", ""))
     DB.set_setting("poll_interval", str(data.get("poll_interval", 10)))
     pinger = data.get("pinger", {})
@@ -377,7 +431,14 @@ async def save_config(req: Request, authorized: bool = Depends(verify_session)):
         if aid not in incoming_ids: DB.delete_account(aid)
     for aid, adata in incoming_accs.items():
         DB.save_account(aid, adata)
+    
+    # 2. Reload
     SERVICE.reload_processors()
+    
+    # 3. Trigger Auto-Backup (Lưu full data để an toàn)
+    full_data = BackupManager.create_backup_data(clean_curl=False) 
+    BackupManager.auto_backup_to_disk(full_data)
+    
     return {"status": "success"}
 
 @app.get("/api/stats")
@@ -391,8 +452,52 @@ def get_stats(authorized: bool = Depends(verify_session)):
         data.append(r['total'])
     return {"labels": labels, "data": data}
 
+# --- BACKUP ROUTES ---
+
+@app.get("/api/backup/download")
+def download_backup(authorized: bool = Depends(verify_session)):
+    """Tải backup về máy (cURL sẽ bị xóa để user tự điền mới)"""
+    data = BackupManager.create_backup_data(clean_curl=True)
+    filename = f"galaxy_backup_clean_{datetime.now().strftime('%Y%m%d')}.json"
+    # Lưu tạm ra file để FastAPI serve
+    temp_path = f"/tmp/{filename}"
+    with open(temp_path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=4)
+    return FileResponse(path=temp_path, filename=filename, media_type='application/json')
+
+@app.post("/api/backup/restore")
+async def restore_backup(file: UploadFile = File(...), authorized: bool = Depends(verify_session)):
+    """Restore từ file upload"""
+    try:
+        content = await file.read()
+        data = json.loads(content)
+        
+        # Gọi lại hàm save_config logic nhưng xử lý nội bộ
+        DB.set_setting("global_chat_id", data.get("global_chat_id", ""))
+        DB.set_setting("poll_interval", str(data.get("poll_interval", 10)))
+        pinger = data.get("pinger", {})
+        DB.set_setting("pinger_enabled", "1" if pinger.get("enabled") else "0")
+        DB.set_setting("pinger_url", pinger.get("url", ""))
+        DB.set_setting("pinger_interval", str(pinger.get("interval", 300)))
+        
+        # Xử lý accounts
+        accounts = data.get("accounts", {})
+        # Xóa hết cái cũ
+        all_old = DB.get_all_accounts()
+        for old in all_old: DB.delete_account(old['id'])
+        # Thêm cái mới
+        for aid, acc_data in accounts.items():
+            # Nếu restore file clean, cURL sẽ rỗng, user phải tự nhập sau
+            DB.save_account(aid, acc_data)
+            
+        SERVICE.reload_processors()
+        return {"status": "success", "message": f"Đã khôi phục {len(accounts)} shop thành công!"}
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"status": "error", "message": str(e)})
+
+
 # ==============================================================================
-# 5. FRONTEND (HTML/CSS/JS)
+# 6. FRONTEND
 # ==============================================================================
 
 HTML_LOGIN = f"""
@@ -404,30 +509,14 @@ HTML_LOGIN = f"""
     <title>Đăng nhập Hệ thống</title>
     <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@700&family=Rajdhani:wght@500&display=swap" rel="stylesheet">
     <style>
-        body {{
-            margin: 0; height: 100vh; background: #050510; display: flex; justify-content: center; align-items: center;
-            font-family: 'Rajdhani', sans-serif; color: #fff; overflow: hidden;
-        }}
+        body {{ margin: 0; height: 100vh; background: #050510; display: flex; justify-content: center; align-items: center; font-family: 'Rajdhani', sans-serif; color: #fff; overflow: hidden; }}
         .stars {{ position: fixed; width: 100%; height: 100%; z-index: -1; background: radial-gradient(circle at center, #1a1a3a 0%, #000 100%); }}
-        .login-card {{
-            background: rgba(255,255,255,0.05); backdrop-filter: blur(15px);
-            border: 1px solid rgba(0, 243, 255, 0.3); padding: 40px; border-radius: 20px;
-            width: 350px; text-align: center; box-shadow: 0 0 30px rgba(0,0,0,0.5);
-            animation: slideUp 0.8s ease-out;
-        }}
+        .login-card {{ background: rgba(255,255,255,0.05); backdrop-filter: blur(15px); border: 1px solid rgba(0, 243, 255, 0.3); padding: 40px; border-radius: 20px; width: 350px; text-align: center; box-shadow: 0 0 30px rgba(0,0,0,0.5); animation: slideUp 0.8s ease-out; }}
         @keyframes slideUp {{ from {{ opacity: 0; transform: translateY(50px); }} to {{ opacity: 1; transform: translateY(0); }} }}
         h1 {{ font-family: 'Orbitron'; color: #00f3ff; margin-bottom: 30px; text-shadow: 0 0 10px rgba(0,243,255,0.5); }}
-        input {{
-            width: 100%; padding: 15px; background: rgba(0,0,0,0.5); border: 1px solid #333;
-            color: #fff; border-radius: 8px; font-size: 1.1rem; margin-bottom: 20px; text-align: center;
-            transition: 0.3s; box-sizing: border-box;
-        }}
+        input {{ width: 100%; padding: 15px; background: rgba(0,0,0,0.5); border: 1px solid #333; color: #fff; border-radius: 8px; font-size: 1.1rem; margin-bottom: 20px; text-align: center; transition: 0.3s; box-sizing: border-box; }}
         input:focus {{ border-color: #00f3ff; box-shadow: 0 0 15px rgba(0,243,255,0.2); outline: none; }}
-        button {{
-            width: 100%; padding: 15px; background: linear-gradient(90deg, #00f3ff, #bc13fe);
-            border: none; color: #fff; font-weight: bold; border-radius: 8px; cursor: pointer;
-            font-size: 1.1rem; font-family: 'Orbitron'; transition: 0.3s;
-        }}
+        button {{ width: 100%; padding: 15px; background: linear-gradient(90deg, #00f3ff, #bc13fe); border: none; color: #fff; font-weight: bold; border-radius: 8px; cursor: pointer; font-size: 1.1rem; font-family: 'Orbitron'; transition: 0.3s; }}
         button:hover {{ transform: scale(1.05); box-shadow: 0 0 20px rgba(188,19,254,0.6); }}
         .copyright {{ margin-top: 20px; font-size: 0.8rem; color: #aaa; }}
     </style>
@@ -470,33 +559,44 @@ HTML_DASHBOARD = f"""
         .row {{ display: flex; gap: 20px; flex-wrap: wrap; }} .col {{ flex: 1; min-width: 250px; }}
         
         /* BUTTON STYLES */
-        .btn {{ padding: 12px 30px; border: none; border-radius: 5px; font-family: 'Orbitron'; font-weight: bold; cursor: pointer; color: #fff; background: linear-gradient(135deg, var(--neon-cyan), #0066ff); }}
+        .btn {{ padding: 12px 30px; border: none; border-radius: 5px; font-family: 'Orbitron'; font-weight: bold; cursor: pointer; color: #fff; background: linear-gradient(135deg, var(--neon-cyan), #0066ff); transition: 0.3s; }}
         .btn:hover {{ transform: scale(1.02); box-shadow: 0 0 20px rgba(0,243,255,0.5); }}
         
         .btn-danger {{ background: transparent; border: 1px solid #ff3333; color: #ff3333; }}
         .btn-danger:hover {{ background: #ff3333; color: white; }}
         
-        .btn-logout {{ background: rgba(255,255,255,0.1); border: 1px solid #fff; padding: 8px 20px; font-size: 0.9rem; text-decoration: none; display: inline-block; color: #fff; border-radius: 5px; }}
-        
-        /* Nút + THÊM SHOP được làm sáng như yêu cầu */
+        /* NEON BUTTON FOR ADD SHOP */
         .btn-highlight {{ 
             background: linear-gradient(90deg, #00f3ff, #0066ff); 
-            color: #000; font-weight: 900; 
+            color: #fff; font-weight: 900; 
             border: 1px solid #fff;
             box-shadow: 0 0 15px #00f3ff;
-            text-shadow: none;
+            text-shadow: 0 0 5px rgba(0,0,0,0.5);
+            font-size: 1rem;
         }}
         .btn-highlight:hover {{ 
-            background: #fff; 
+            background: #fff; color: #000;
             box-shadow: 0 0 25px #00f3ff;
         }}
-
+        
+        .btn-logout {{ background: rgba(255,255,255,0.1); border: 1px solid #fff; padding: 8px 20px; font-size: 0.9rem; text-decoration: none; display: inline-block; color: #fff; border-radius: 5px; }}
+        
         .account-card {{ background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); padding: 20px; border-radius: 10px; margin-bottom: 20px; position: relative; }}
         .chart-container {{ height: 300px; width: 100%; background: rgba(0,0,0,0.3); border-radius: 10px; padding: 10px; margin-top: 20px; display: flex; align-items: flex-end; gap: 10px; }}
         .footer {{ text-align: center; margin-top: 50px; color: #666; padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.1); }}
         #loader {{ position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #000; z-index: 9999; display: flex; justify-content: center; align-items: center; transition: opacity 0.5s; }}
         .spinner {{ width: 60px; height: 60px; border: 5px solid rgba(255,255,255,0.1); border-top: 5px solid var(--neon-cyan); border-radius: 50%; animation: spin 1s linear infinite; }}
         @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
+        
+        /* Upload Input Hidden */
+        input[type="file"] {{ display: none; }}
+        .upload-label {{
+            display: inline-block; padding: 12px 30px;
+            background: rgba(255,255,255,0.1); border: 1px dashed #aaa;
+            border-radius: 5px; cursor: pointer; font-family: 'Orbitron'; font-size: 0.9rem;
+            color: #ccc; transition: 0.3s; text-align: center;
+        }}
+        .upload-label:hover {{ background: rgba(255,255,255,0.2); color: #fff; border-color: #fff; }}
     </style>
 </head>
 <body>
@@ -544,6 +644,24 @@ HTML_DASHBOARD = f"""
                 <button type="submit" class="btn" style="width:80%; max-width:400px; font-size:1.2rem;">LƯU CẤU HÌNH</button>
             </div>
         </form>
+        
+        <div class="panel" style="margin-top: 50px;">
+            <h2>💾 SAO LƯU & KHÔI PHỤC (JSON)</h2>
+            <div style="color: #aaa; margin-bottom: 15px; font-size: 0.9rem;">
+                * Backup sẽ chỉ lưu: Tên Shop, Token, Chat ID và Cấu hình chung. <br>
+                * cURL sẽ <b>KHÔNG</b> được lưu (để trống) vì cookie thay đổi liên tục.
+            </div>
+            <div class="row">
+                <div class="col">
+                    <a href="/api/backup/download" target="_blank" class="btn" style="display:block; text-align:center; text-decoration:none; background: #28a745;">⬇️ TẢI FILE BACKUP</a>
+                </div>
+                <div class="col" style="display:flex; gap:10px; align-items:center;">
+                    <label for="restoreFile" class="upload-label" style="flex:1">📂 CHỌN FILE RESTORE...</label>
+                    <input type="file" id="restoreFile" accept=".json">
+                    <button type="button" class="btn" onclick="doRestore()" style="background: #e0a800;">⬆️ KHÔI PHỤC NGAY</button>
+                </div>
+            </div>
+        </div>
 
         <div class="footer">Bản quyền thuộc về Admin Văn Linh &copy; 2025</div>
     </div>
@@ -598,6 +716,33 @@ HTML_DASHBOARD = f"""
             const payload={{ global_chat_id:document.getElementById('gid').value, poll_interval:parseInt(document.getElementById('poll_int').value), pinger:{{enabled:document.getElementById('p_enable').value==="1", url:document.getElementById('p_url').value, interval:parseInt(document.getElementById('p_interval').value)}}, accounts:accounts }};
             await api.saveConfig(payload); alert('ĐÃ LƯU CẤU HÌNH THÀNH CÔNG!'); location.reload();
         }};
+        
+        // Handle File Input Name
+        document.getElementById('restoreFile').addEventListener('change', function() {{
+            const label = document.querySelector('.upload-label');
+            if(this.files && this.files.length > 0) label.innerText = "📄 " + this.files[0].name;
+        }});
+
+        async function doRestore() {{
+            const fileInput = document.getElementById('restoreFile');
+            if(!fileInput.files.length) {{ alert('Vui lòng chọn file JSON backup!'); return; }}
+            if(!confirm('Bạn có chắc muốn khôi phục? Dữ liệu hiện tại sẽ bị thay thế!')) return;
+            
+            const formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            
+            try {{
+                const res = await fetch('/api/backup/restore', {{ method: 'POST', body: formData }});
+                const result = await res.json();
+                if(result.status === 'success') {{
+                    alert(result.message);
+                    location.reload();
+                }} else {{
+                    alert('Lỗi: ' + result.message);
+                }}
+            }} catch(e) {{ alert('Lỗi upload: ' + e); }}
+        }}
+        
         init();
     </script>
 </body>
@@ -605,7 +750,7 @@ HTML_DASHBOARD = f"""
 """
 
 # ==============================================================================
-# 6. RUNTIME
+# 7. RUNTIME
 # ==============================================================================
 
 if not SystemConfig.DISABLE_POLLER:
