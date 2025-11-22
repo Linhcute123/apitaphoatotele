@@ -1,6 +1,6 @@
 """
 PROJECT: TAPHOAMMO GALAXY ENTERPRISE
-VERSION: 23.0 (Fix Save Name & Startup Notify)
+VERSION: 24.0 (UI Label Update)
 AUTHOR: AI ASSISTANT & ADMIN VAN LINH
 LICENSE: PROPRIETARY
 """
@@ -39,7 +39,7 @@ except ImportError:
 
 class SystemConfig:
     APP_NAME = "TapHoaMMO Enterprise"
-    VERSION = "23.0.0"
+    VERSION = "24.0.0"
     DATABASE_FILE = "galaxy_data.db"
     LOG_FILE = "system_run.log"
     
@@ -271,7 +271,6 @@ class AccountProcessor:
                     old = self.last_notify_nums[i]
                     lbl = labels[i]
                     
-                    # Bỏ qua khiếu nại theo yêu cầu v22
                     if "khiếu nại" in lbl.lower(): continue 
 
                     if val > old:
@@ -330,10 +329,7 @@ class BackgroundService:
                 if aid not in current_ids: del self.processors[aid]
     
     def send_startup_message(self, global_chat_id):
-        """Gửi tin nhắn màu mè khi bot khởi động/lưu cấu hình"""
         if not global_chat_id: return
-        
-        # Lấy token của shop đầu tiên để gửi (vì bot cần token)
         token_to_use = ""
         with self.lock:
             if self.processors:
@@ -349,13 +345,8 @@ class BackgroundService:
             f"⏱️ Thời gian: {timestamp}\n\n"
             f"<i>Chúc Chủ Nhân một ngày bão đơn! 💸💸💸</i>"
         )
-        
         try:
-            requests.post(
-                f"https://api.telegram.org/bot{token_to_use}/sendMessage",
-                json={"chat_id": global_chat_id, "text": msg, "parse_mode": "HTML"},
-                timeout=10
-            )
+            requests.post(f"https://api.telegram.org/bot{token_to_use}/sendMessage", json={"chat_id": global_chat_id, "text": msg, "parse_mode": "HTML"}, timeout=10)
         except: pass
 
     def pinger_loop(self):
@@ -458,7 +449,7 @@ async def save_config(req: Request, authorized: bool = Depends(verify_session)):
     full_data = BackupManager.create_backup_data(clean_curl=False) 
     BackupManager.auto_backup_to_disk(full_data)
     
-    # [FEATURE] Gửi thông báo khởi động màu mè
+    # Gửi thông báo khởi động
     threading.Thread(target=SERVICE.send_startup_message, args=(global_chat_id,)).start()
     
     return {"status": "success"}
@@ -466,7 +457,6 @@ async def save_config(req: Request, authorized: bool = Depends(verify_session)):
 @app.get("/api/stats")
 def get_stats(authorized: bool = Depends(verify_session)):
     conn = DB.get_connection()
-    # Chỉ lấy đơn hàng
     rows = conn.execute("SELECT date, SUM(count) as total FROM stats WHERE category LIKE '%Đơn hàng%' GROUP BY date ORDER BY date DESC LIMIT 7").fetchall()
     conn.close()
     labels = []; data = []
@@ -653,11 +643,11 @@ HTML_DASHBOARD = f"""
 
         const api={{ getConfig:async()=>(await fetch('/api/config')).json(), saveConfig:async(d)=>(await fetch('/api/config',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(d)}})).json(), getStats:async()=>(await fetch('/api/stats')).json() }};
         
-        // [FIXED] Lấy đúng value từ input
+        // [MODIFIED] Thay label "Tên Shop" thành "User TapHoaMMO"
         function renderAccount(id, d={{}}) {{
             const el=document.createElement('div'); el.className='account-card'; el.dataset.id=id;
             el.innerHTML=`<div style="display:flex; justify-content:space-between; margin-bottom:10px;"><strong>${{d.account_name||'Shop Mới'}}</strong><button type="button" class="btn btn-danger" onclick="this.closest('.account-card').remove()">XOÁ</button></div>
-            <div class="row"><div class="col"><label>Tên Shop:</label><input type="text" class="acc-name" value="${{d.account_name||''}}" required></div><div class="col"><label>Token:</label><input type="password" class="acc-token" value="${{d.bot_token||''}}" required></div></div>
+            <div class="row"><div class="col"><label>User TapHoaMMO:</label><input type="text" class="acc-name" value="${{d.account_name||''}}" required></div><div class="col"><label>Token:</label><input type="password" class="acc-token" value="${{d.bot_token||''}}" required></div></div>
             <div style="margin-top:10px"><label>Notify cURL:</label><textarea class="acc-notify" rows="2">${{d.notify_curl||''}}</textarea></div>
             <div style="margin-top:10px"><label>Chat cURL:</label><textarea class="acc-chat" rows="2">${{d.chat_curl||''}}</textarea></div>`;
             document.getElementById('acc_list').appendChild(el);
@@ -688,7 +678,6 @@ HTML_DASHBOARD = f"""
             }} catch(e){{ console.error(e); }} finally {{ document.getElementById('loader').style.opacity='0'; setTimeout(()=>document.getElementById('loader').remove(),500); }}
         }}
         
-        // [FIXED] Logic lấy dữ liệu chính xác
         document.getElementById('mainForm').onsubmit = async(e) => {{
             e.preventDefault();
             const accounts={{}}; 
