@@ -1,10 +1,8 @@
 """
 PROJECT: TAPHOAMMO GALAXY ENTERPRISE
-VERSION: 16.0 (Admin Van Linh Edition)
+VERSION: 17.0 (Bright UI & Fix Login)
 AUTHOR: AI ASSISTANT & ADMIN VAN LINH
 LICENSE: PROPRIETARY
-DESCRIPTION: Hệ thống quản lý đơn hàng đa luồng, tích hợp Database SQLite, 
-             Bảo mật Secret Key, Giao diện Galaxy Canvas.
 """
 
 import os
@@ -18,42 +16,43 @@ import re
 import shlex
 import sqlite3
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 
 # Cố gắng import FastAPI
 try:
+    # Cần cài: pip install fastapi uvicorn requests python-dotenv python-multipart
     from fastapi import FastAPI, Request, HTTPException, Depends, status, Form, Cookie
-    from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-    from fastapi.security import APIKeyCookie
+    from fastapi.responses import HTMLResponse, RedirectResponse
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
-    print("CRITICAL ERROR: Thiếu thư viện. Vui lòng chạy: pip install fastapi uvicorn requests python-dotenv multipart")
+    print("CRITICAL ERROR: Thiếu thư viện. Vui lòng chạy: pip install fastapi uvicorn requests python-dotenv python-multipart")
     exit(1)
 
 # ==============================================================================
-# 1. CONFIGURATION (CẤU HÌNH HỆ THỐNG)
+# 1. CONFIGURATION
 # ==============================================================================
 
 class SystemConfig:
     APP_NAME = "TapHoaMMO Enterprise"
-    VERSION = "16.0.0"
+    VERSION = "17.0.0"
     DATABASE_FILE = "galaxy_data.db"
     LOG_FILE = "system_run.log"
     
-    # --- CẤU HÌNH BẢO MẬT (QUAN TRỌNG) ---
-    # Mặc định mã bảo mật là 'admin'. Hãy đổi trong file .env hoặc sửa ở đây.
-    ADMIN_SECRET = os.getenv("ADMIN_SECRET", "admin") 
+    # --- CẤU HÌNH BẢO MẬT ---
+    # Lấy mật khẩu từ Environment của Render.
+    # .strip() giúp loại bỏ dấu cách thừa nếu lỡ tay copy paste sai.
+    ADMIN_SECRET = os.getenv("ADMIN_SECRET", "admin").strip()
     
     DEFAULT_POLL_INTERVAL = 10
     VERIFY_TLS = bool(int(os.getenv("VERIFY_TLS", "1")))
     DISABLE_POLLER = os.getenv("DISABLE_POLLER", "0") == "1"
 
 # ==============================================================================
-# 2. LOGGING & DATABASE
+# 2. DATABASE & LOGGING
 # ==============================================================================
 
 class LoggerManager:
@@ -67,12 +66,15 @@ class LoggerManager:
         self.logger = logging.getLogger("GalaxyBot")
         self.logger.setLevel(logging.INFO)
         formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+        # Log ra file
         file_handler = RotatingFileHandler(SystemConfig.LOG_FILE, maxBytes=5*1024*1024, backupCount=3)
         file_handler.setFormatter(formatter)
         self.logger.addHandler(file_handler)
+        # Log ra màn hình console Render
         console_handler = logging.StreamHandler()
         console_handler.setFormatter(formatter)
         self.logger.addHandler(console_handler)
+
     def info(self, msg): self.logger.info(msg)
     def error(self, msg): self.logger.error(msg)
 
@@ -120,7 +122,7 @@ class DatabaseManager:
 DB = DatabaseManager(SystemConfig.DATABASE_FILE)
 
 # ==============================================================================
-# 3. CORE LOGIC
+# 3. LOGIC XỬ LÝ
 # ==============================================================================
 
 class Utils:
@@ -307,13 +309,12 @@ class BackgroundService:
 SERVICE = BackgroundService()
 
 # ==============================================================================
-# 4. AUTH & API
+# 4. AUTH & API ROUTES
 # ==============================================================================
 
 app = FastAPI(docs_url=None, redoc_url=None)
 
 def verify_session(session_id: str = Cookie(None)):
-    # Simple cookie check. In production use signed cookies or JWT.
     if session_id != "admin_authorized":
         raise HTTPException(status_code=status.HTTP_307_TEMPORARY_REDIRECT, headers={"Location": "/login"})
     return True
@@ -324,11 +325,14 @@ def login_page():
 
 @app.post("/login")
 def login_action(secret: str = Form(...)):
-    if secret == SystemConfig.ADMIN_SECRET:
+    # [FIX] Thêm .strip() để loại bỏ dấu cách thừa nếu có
+    if secret.strip() == SystemConfig.ADMIN_SECRET:
         resp = RedirectResponse("/", status_code=303)
-        resp.set_cookie(key="session_id", value="admin_authorized", max_age=86400) # 1 day
+        resp.set_cookie(key="session_id", value="admin_authorized", max_age=86400)
         return resp
-    return HTMLResponse(content="<script>alert('❌ Mật mã sai! Vui lòng thử lại.'); window.location.href='/login';</script>")
+    # Log lỗi để debug trên Render
+    print(f"[LOGIN FAILED] Input length: {len(secret)} vs Expected: {len(SystemConfig.ADMIN_SECRET)}")
+    return HTMLResponse(content="<script>alert('❌ MẬT KHẨU SAI! Vui lòng kiểm tra Environment Variable ADMIN_SECRET trên Render.'); window.location.href='/login';</script>")
 
 @app.get("/logout")
 def logout():
@@ -433,7 +437,7 @@ HTML_LOGIN = f"""
     <div class="login-card">
         <h1>GALAXY ACCESS</h1>
         <form action="/login" method="POST">
-            <input type="password" name="secret" placeholder="NHẬP MÃ BẢO MẬT (ADMIN SECRET)" required autofocus>
+            <input type="password" name="secret" placeholder="NHẬP MÃ BẢO MẬT" required autofocus>
             <button type="submit">MỞ KHÓA HỆ THỐNG</button>
         </form>
         <div class="copyright">Bản quyền thuộc về Admin Văn Linh</div>
@@ -464,11 +468,29 @@ HTML_DASHBOARD = f"""
         input, select, textarea {{ width: 100%; background: rgba(0,0,0,0.6); border: 1px solid #333; color: #fff; padding: 12px; border-radius: 8px; font-family: monospace; transition: 0.3s; }}
         input:focus, textarea:focus {{ border-color: var(--neon-cyan); box-shadow: 0 0 15px rgba(0,243,255,0.2); }}
         .row {{ display: flex; gap: 20px; flex-wrap: wrap; }} .col {{ flex: 1; min-width: 250px; }}
+        
+        /* BUTTON STYLES */
         .btn {{ padding: 12px 30px; border: none; border-radius: 5px; font-family: 'Orbitron'; font-weight: bold; cursor: pointer; color: #fff; background: linear-gradient(135deg, var(--neon-cyan), #0066ff); }}
         .btn:hover {{ transform: scale(1.02); box-shadow: 0 0 20px rgba(0,243,255,0.5); }}
+        
         .btn-danger {{ background: transparent; border: 1px solid #ff3333; color: #ff3333; }}
         .btn-danger:hover {{ background: #ff3333; color: white; }}
+        
         .btn-logout {{ background: rgba(255,255,255,0.1); border: 1px solid #fff; padding: 8px 20px; font-size: 0.9rem; text-decoration: none; display: inline-block; color: #fff; border-radius: 5px; }}
+        
+        /* Nút + THÊM SHOP được làm sáng như yêu cầu */
+        .btn-highlight {{ 
+            background: linear-gradient(90deg, #00f3ff, #0066ff); 
+            color: #000; font-weight: 900; 
+            border: 1px solid #fff;
+            box-shadow: 0 0 15px #00f3ff;
+            text-shadow: none;
+        }}
+        .btn-highlight:hover {{ 
+            background: #fff; 
+            box-shadow: 0 0 25px #00f3ff;
+        }}
+
         .account-card {{ background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); padding: 20px; border-radius: 10px; margin-bottom: 20px; position: relative; }}
         .chart-container {{ height: 300px; width: 100%; background: rgba(0,0,0,0.3); border-radius: 10px; padding: 10px; margin-top: 20px; display: flex; align-items: flex-end; gap: 10px; }}
         .footer {{ text-align: center; margin-top: 50px; color: #666; padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.1); }}
@@ -513,7 +535,7 @@ HTML_DASHBOARD = f"""
             <div class="panel">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
                     <h2 style="border:none; margin:0;">🚀 DANH SÁCH SHOP</h2>
-                    <button type="button" style="background:rgba(255,255,255,0.1); border:1px solid #fff;" onclick="addAccount()">+ THÊM SHOP</button>
+                    <button type="button" class="btn btn-highlight" onclick="addAccount()">+ THÊM SHOP</button>
                 </div>
                 <div id="acc_list"></div>
             </div>
