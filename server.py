@@ -1,6 +1,6 @@
 """
 PROJECT: TAPHOAMMO GALAXY ENTERPRISE
-VERSION: 24.0 (UI Label Update)
+VERSION: 25.0 (Fix Save Name Persistence)
 AUTHOR: AI ASSISTANT & ADMIN VAN LINH
 LICENSE: PROPRIETARY
 """
@@ -16,7 +16,6 @@ import re
 import shlex
 import sqlite3
 import logging
-import random
 from typing import Any, Dict, List
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -39,7 +38,7 @@ except ImportError:
 
 class SystemConfig:
     APP_NAME = "TapHoaMMO Enterprise"
-    VERSION = "24.0.0"
+    VERSION = "25.0.0"
     DATABASE_FILE = "galaxy_data.db"
     LOG_FILE = "system_run.log"
     
@@ -104,6 +103,7 @@ class DatabaseManager:
             conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
     def get_all_accounts(self):
         with self.get_connection() as conn:
+            # Trả về danh sách dictionary
             return [dict(row) for row in conn.execute("SELECT * FROM accounts").fetchall()]
     def save_account(self, acc_id, data):
         with self.get_connection() as conn:
@@ -208,7 +208,8 @@ class Utils:
 class AccountProcessor:
     def __init__(self, account_data: dict):
         self.id = account_data['id']
-        self.name = account_data['name']
+        # [FIXED] Lấy name từ DB (nếu key là name) hoặc account_name (nếu từ JSON)
+        self.name = account_data.get('name') or account_data.get('account_name') or 'Unknown'
         self.bot_token = account_data['bot_token']
         self.notify_config = Utils.parse_curl(account_data['notify_curl'])
         self.chat_config = Utils.parse_curl(account_data['chat_curl'])
@@ -413,6 +414,14 @@ def root(authorized: bool = Depends(verify_session)): return HTML_DASHBOARD
 
 @app.get("/api/config")
 def get_config(authorized: bool = Depends(verify_session)):
+    raw_accounts = DB.get_all_accounts()
+    # [FIXED] Chuyển đổi tên cột 'name' thành 'account_name' để frontend hiểu
+    formatted_accounts = []
+    for acc in raw_accounts:
+        acc_dict = dict(acc)
+        acc_dict['account_name'] = acc_dict['name']
+        formatted_accounts.append(acc_dict)
+
     return {
         "global_chat_id": DB.get_setting("global_chat_id", ""),
         "poll_interval": int(DB.get_setting("poll_interval", "10")),
@@ -421,7 +430,7 @@ def get_config(authorized: bool = Depends(verify_session)):
             "url": DB.get_setting("pinger_url", ""),
             "interval": int(DB.get_setting("pinger_interval", "300"))
         },
-        "accounts": DB.get_all_accounts()
+        "accounts": formatted_accounts
     }
 
 @app.post("/api/config")
@@ -457,6 +466,7 @@ async def save_config(req: Request, authorized: bool = Depends(verify_session)):
 @app.get("/api/stats")
 def get_stats(authorized: bool = Depends(verify_session)):
     conn = DB.get_connection()
+    # Chỉ lấy đơn hàng
     rows = conn.execute("SELECT date, SUM(count) as total FROM stats WHERE category LIKE '%Đơn hàng%' GROUP BY date ORDER BY date DESC LIMIT 7").fetchall()
     conn.close()
     labels = []; data = []
@@ -643,11 +653,10 @@ HTML_DASHBOARD = f"""
 
         const api={{ getConfig:async()=>(await fetch('/api/config')).json(), saveConfig:async(d)=>(await fetch('/api/config',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(d)}})).json(), getStats:async()=>(await fetch('/api/stats')).json() }};
         
-        // [MODIFIED] Thay label "Tên Shop" thành "User TapHoaMMO"
         function renderAccount(id, d={{}}) {{
             const el=document.createElement('div'); el.className='account-card'; el.dataset.id=id;
             el.innerHTML=`<div style="display:flex; justify-content:space-between; margin-bottom:10px;"><strong>${{d.account_name||'Shop Mới'}}</strong><button type="button" class="btn btn-danger" onclick="this.closest('.account-card').remove()">XOÁ</button></div>
-            <div class="row"><div class="col"><label>User TapHoaMMO:</label><input type="text" class="acc-name" value="${{d.account_name||''}}" required></div><div class="col"><label>Token:</label><input type="password" class="acc-token" value="${{d.bot_token||''}}" required></div></div>
+            <div class="row"><div class="col"><label>Tên Shop:</label><input type="text" class="acc-name" value="${{d.account_name||''}}" required></div><div class="col"><label>Token:</label><input type="password" class="acc-token" value="${{d.bot_token||''}}" required></div></div>
             <div style="margin-top:10px"><label>Notify cURL:</label><textarea class="acc-notify" rows="2">${{d.notify_curl||''}}</textarea></div>
             <div style="margin-top:10px"><label>Chat cURL:</label><textarea class="acc-chat" rows="2">${{d.chat_curl||''}}</textarea></div>`;
             document.getElementById('acc_list').appendChild(el);
