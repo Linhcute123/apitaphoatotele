@@ -1,6 +1,6 @@
 """
 PROJECT: TAPHOAMMO GALAXY ENTERPRISE
-VERSION: 21.0 (Fix Save Data Bug)
+VERSION: 22.0 (Fix Chart Logic & Remove Complaint)
 AUTHOR: AI ASSISTANT & ADMIN VAN LINH
 LICENSE: PROPRIETARY
 """
@@ -38,7 +38,7 @@ except ImportError:
 
 class SystemConfig:
     APP_NAME = "TapHoaMMO Enterprise"
-    VERSION = "21.0.0"
+    VERSION = "22.0.0"
     DATABASE_FILE = "galaxy_data.db"
     LOG_FILE = "system_run.log"
     
@@ -154,7 +154,7 @@ class BackupManager:
         except Exception as e: SYS_LOG.error(f"❌ Auto-backup failed: {e}")
 
 # ==============================================================================
-# 4. CORE LOGIC
+# 4. CORE LOGIC (UPDATED)
 # ==============================================================================
 
 class Utils:
@@ -269,12 +269,17 @@ class AccountProcessor:
                 for i, val in enumerate(nums):
                     old = self.last_notify_nums[i]
                     lbl = labels[i]
+                    
+                    # [CẬP NHẬT v22.0] Bỏ qua hoàn toàn cột Khiếu nại
+                    if "khiếu nại" in lbl.lower():
+                        continue 
+
                     if val > old:
                         has_change = True
                         DB.update_stat(self.id, today, lbl, val - old)
                         if "tin nhắn" in lbl.lower(): check_chat = True
                     
-                    if val > 0 and ("khiếu nại" in lbl.lower() or val > old):
+                    if val > 0 and val > old:
                          alerts.append(f"{Utils.get_icon(lbl)} {lbl}: <code>{val}</code>")
                 
                 chat_msgs = self.fetch_chats(is_baseline) if check_chat else []
@@ -422,10 +427,12 @@ async def save_config(req: Request, authorized: bool = Depends(verify_session)):
     BackupManager.auto_backup_to_disk(full_data)
     return {"status": "success"}
 
+# [CẬP NHẬT v22.0] API Stats lọc dữ liệu CHỈ LẤY ĐƠN HÀNG
 @app.get("/api/stats")
 def get_stats(authorized: bool = Depends(verify_session)):
     conn = DB.get_connection()
-    rows = conn.execute("SELECT date, SUM(count) as total FROM stats GROUP BY date ORDER BY date DESC LIMIT 7").fetchall()
+    # Chỉ lấy category chứa chữ "Đơn hàng" (bỏ tin nhắn, khiếu nại, đánh giá)
+    rows = conn.execute("SELECT date, SUM(count) as total FROM stats WHERE category LIKE '%Đơn hàng%' GROUP BY date ORDER BY date DESC LIMIT 7").fetchall()
     conn.close()
     labels = []; data = []
     for r in reversed(rows):
@@ -646,7 +653,6 @@ HTML_DASHBOARD = f"""
             }} catch(e){{ console.error(e); }} finally {{ document.getElementById('loader').style.opacity='0'; setTimeout(()=>document.getElementById('loader').remove(),500); }}
         }}
         
-        // [FIX] Logic Save lấy đúng class name
         document.getElementById('mainForm').onsubmit = async(e) => {{
             e.preventDefault();
             const accounts={{}}; 
