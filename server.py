@@ -1,6 +1,6 @@
 """
 PROJECT: TAPHOAMMO GALAXY ENTERPRISE
-VERSION: 18.0 (Auto-Backup & Restore System)
+VERSION: 21.0 (Fix Save Data Bug)
 AUTHOR: AI ASSISTANT & ADMIN VAN LINH
 LICENSE: PROPRIETARY
 """
@@ -23,7 +23,6 @@ from logging.handlers import RotatingFileHandler
 
 # Import Libraries
 try:
-    # Cần cài: pip install fastapi uvicorn requests python-dotenv python-multipart aiofiles
     from fastapi import FastAPI, Request, HTTPException, Depends, status, Form, Cookie, File, UploadFile
     from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
     from fastapi.security import APIKeyCookie
@@ -39,7 +38,7 @@ except ImportError:
 
 class SystemConfig:
     APP_NAME = "TapHoaMMO Enterprise"
-    VERSION = "18.0.0"
+    VERSION = "21.0.0"
     DATABASE_FILE = "galaxy_data.db"
     LOG_FILE = "system_run.log"
     
@@ -47,8 +46,6 @@ class SystemConfig:
     ADMIN_SECRET = os.getenv("ADMIN_SECRET", "admin").strip()
     
     # --- BACKUP ---
-    # Đường dẫn thư mục để tự động lưu file backup. 
-    # Nếu không set trong ENV, tính năng auto-backup ra file sẽ tắt.
     BACKUP_DIR = os.getenv("BACKUP_DIR", "") 
 
     DEFAULT_POLL_INTERVAL = 10
@@ -123,63 +120,38 @@ class DatabaseManager:
 DB = DatabaseManager(SystemConfig.DATABASE_FILE)
 
 # ==============================================================================
-# 3. BACKUP MANAGER (NEW FEATURE)
+# 3. BACKUP MANAGER
 # ==============================================================================
 
 class BackupManager:
     @staticmethod
     def create_backup_data(clean_curl=True):
-        """Tạo dữ liệu JSON để backup."""
         data = {
-            "meta": {
-                "version": SystemConfig.VERSION,
-                "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "type": "clean" if clean_curl else "full"
-            },
+            "meta": {"version": SystemConfig.VERSION, "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "type": "clean" if clean_curl else "full"},
             "global_chat_id": DB.get_setting("global_chat_id", ""),
             "poll_interval": int(DB.get_setting("poll_interval", "10")),
-            "pinger": {
-                "enabled": DB.get_setting("pinger_enabled") == "1",
-                "url": DB.get_setting("pinger_url", ""),
-                "interval": int(DB.get_setting("pinger_interval", "300"))
-            },
+            "pinger": {"enabled": DB.get_setting("pinger_enabled") == "1", "url": DB.get_setting("pinger_url", ""), "interval": int(DB.get_setting("pinger_interval", "300"))},
             "accounts": {}
         }
-        
         accounts = DB.get_all_accounts()
         for acc in accounts:
             data["accounts"][acc['id']] = {
-                "account_name": acc['name'],
-                "bot_token": acc['bot_token'],
-                # Nếu clean_curl=True, ta xóa cURL đi để người dùng tự nhập lại
-                "notify_curl": "" if clean_curl else acc['notify_curl'],
-                "chat_curl": "" if clean_curl else acc['chat_curl']
+                "account_name": acc['name'], "bot_token": acc['bot_token'],
+                "notify_curl": "" if clean_curl else acc['notify_curl'], "chat_curl": "" if clean_curl else acc['chat_curl']
             }
         return data
 
     @staticmethod
     def auto_backup_to_disk(data):
-        """Tự động lưu file vào thư mục BACKUP_DIR nếu có cấu hình."""
-        if not SystemConfig.BACKUP_DIR:
-            return # Không cấu hình thư mục thì bỏ qua
-        
+        if not SystemConfig.BACKUP_DIR: return
         try:
             os.makedirs(SystemConfig.BACKUP_DIR, exist_ok=True)
             filename = f"auto_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
             filepath = os.path.join(SystemConfig.BACKUP_DIR, filename)
-            
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=4, ensure_ascii=False)
-            
-            SYS_LOG.info(f"✅ Auto-backup created: {filepath}")
-            
-            # (Optional) Xóa bớt backup cũ nếu quá nhiều, giữ lại 10 file mới nhất
+            with open(filepath, 'w', encoding='utf-8') as f: json.dump(data, f, indent=4, ensure_ascii=False)
             files = sorted([os.path.join(SystemConfig.BACKUP_DIR, f) for f in os.listdir(SystemConfig.BACKUP_DIR)], key=os.path.getmtime)
-            if len(files) > 10:
-                for f in files[:-10]:
-                    os.remove(f)
-        except Exception as e:
-            SYS_LOG.error(f"❌ Auto-backup failed: {e}")
+            if len(files) > 10: [os.remove(f) for f in files[:-10]]
+        except Exception as e: SYS_LOG.error(f"❌ Auto-backup failed: {e}")
 
 # ==============================================================================
 # 4. CORE LOGIC
@@ -214,6 +186,7 @@ class Utils:
         parts = s.split("|") if s else []
         if len(parts) > 0 and all(re.fullmatch(r"\d+", p or "") for p in parts): return {"raw": s, "numbers": [int(p) for p in parts]}
         return {"raw": s}
+    
     @staticmethod
     def get_labels(length: int) -> List[str]:
         labels = [f"Mục {i+1}" for i in range(length)]
@@ -221,6 +194,7 @@ class Utils:
         for idx, name in mapping.items():
             if idx < length: labels[idx] = name
         return labels
+    
     @staticmethod
     def get_icon(label: str) -> str:
         low = label.lower()
@@ -291,6 +265,7 @@ class AccountProcessor:
                 alerts = []
                 has_change = False
                 check_chat = False
+                
                 for i, val in enumerate(nums):
                     old = self.last_notify_nums[i]
                     lbl = labels[i]
@@ -298,14 +273,26 @@ class AccountProcessor:
                         has_change = True
                         DB.update_stat(self.id, today, lbl, val - old)
                         if "tin nhắn" in lbl.lower(): check_chat = True
+                    
                     if val > 0 and ("khiếu nại" in lbl.lower() or val > old):
-                         alerts.append(f"  {Utils.get_icon(lbl)} <b>{lbl}:</b> {val}")
+                         alerts.append(f"{Utils.get_icon(lbl)} {lbl}: <code>{val}</code>")
+                
                 chat_msgs = self.fetch_chats(is_baseline) if check_chat else []
+                
                 if has_change and not is_baseline:
-                    msg_lines = [f"<b>🔔 BÁO CÁO - [{html.escape(self.name)}]</b>"]
-                    if chat_msgs: msg_lines.append("➖➖➖➖➖➖➖"); msg_lines.extend(chat_msgs)
-                    if alerts: msg_lines.append("➖➖➖➖➖➖➖"); msg_lines.extend(alerts)
-                    if len(msg_lines) > 1: self.send_tele(global_chat_id, "\n".join(msg_lines))
+                    timestamp = datetime.now(timezone(timedelta(hours=7))).strftime("%H:%M - %d/%m")
+                    msg_lines = [f"<b>💎 UPDATE • {html.escape(self.name.upper())}</b>"]
+                    msg_lines.append(f"<i>🕒 {timestamp}</i>")
+                    msg_lines.append("━━━━━━━━━━━━━━━━━━")
+                    
+                    if alerts: msg_lines.extend(alerts)
+                    if chat_msgs:
+                        msg_lines.append("━━━━━━━━━━━━━━━━━━")
+                        msg_lines.append("<b>💬 Tin nhắn mới:</b>")
+                        msg_lines.extend(chat_msgs)
+                    
+                    self.send_tele(global_chat_id, "\n".join(msg_lines))
+                
                 self.last_notify_nums = nums
         except Exception as e: SYS_LOG.error(f"Err {self.name}: {e}")
 
@@ -329,7 +316,7 @@ class BackgroundService:
                 aid = acc['id']
                 current_ids.add(aid)
                 if aid not in self.processors: self.processors[aid] = AccountProcessor(acc)
-                else: # Soft update
+                else: 
                     old = self.processors[aid]
                     new = AccountProcessor(acc)
                     new.last_notify_nums = old.last_notify_nums
@@ -385,7 +372,7 @@ def login_action(secret: str = Form(...)):
         resp = RedirectResponse("/", status_code=303)
         resp.set_cookie(key="session_id", value="admin_authorized", max_age=86400)
         return resp
-    return HTMLResponse(content="<script>alert('❌ MẬT KHẨU SAI! Kiểm tra biến ADMIN_SECRET trên Render.'); window.location.href='/login';</script>")
+    return HTMLResponse(content="<script>alert('❌ MẬT KHẨU SAI!'); window.location.href='/login';</script>")
 
 @app.get("/logout")
 def logout():
@@ -415,8 +402,6 @@ def get_config(authorized: bool = Depends(verify_session)):
 @app.post("/api/config")
 async def save_config(req: Request, authorized: bool = Depends(verify_session)):
     data = await req.json()
-    
-    # 1. Lưu cấu hình
     DB.set_setting("global_chat_id", data.get("global_chat_id", ""))
     DB.set_setting("poll_interval", str(data.get("poll_interval", 10)))
     pinger = data.get("pinger", {})
@@ -432,13 +417,9 @@ async def save_config(req: Request, authorized: bool = Depends(verify_session)):
     for aid, adata in incoming_accs.items():
         DB.save_account(aid, adata)
     
-    # 2. Reload
     SERVICE.reload_processors()
-    
-    # 3. Trigger Auto-Backup (Lưu full data để an toàn)
     full_data = BackupManager.create_backup_data(clean_curl=False) 
     BackupManager.auto_backup_to_disk(full_data)
-    
     return {"status": "success"}
 
 @app.get("/api/stats")
@@ -452,49 +433,32 @@ def get_stats(authorized: bool = Depends(verify_session)):
         data.append(r['total'])
     return {"labels": labels, "data": data}
 
-# --- BACKUP ROUTES ---
-
 @app.get("/api/backup/download")
 def download_backup(authorized: bool = Depends(verify_session)):
-    """Tải backup về máy (cURL sẽ bị xóa để user tự điền mới)"""
     data = BackupManager.create_backup_data(clean_curl=True)
     filename = f"galaxy_backup_clean_{datetime.now().strftime('%Y%m%d')}.json"
-    # Lưu tạm ra file để FastAPI serve
     temp_path = f"/tmp/{filename}"
-    with open(temp_path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=4)
+    with open(temp_path, 'w', encoding='utf-8') as f: json.dump(data, f, indent=4)
     return FileResponse(path=temp_path, filename=filename, media_type='application/json')
 
 @app.post("/api/backup/restore")
 async def restore_backup(file: UploadFile = File(...), authorized: bool = Depends(verify_session)):
-    """Restore từ file upload"""
     try:
         content = await file.read()
         data = json.loads(content)
-        
-        # Gọi lại hàm save_config logic nhưng xử lý nội bộ
         DB.set_setting("global_chat_id", data.get("global_chat_id", ""))
         DB.set_setting("poll_interval", str(data.get("poll_interval", 10)))
         pinger = data.get("pinger", {})
         DB.set_setting("pinger_enabled", "1" if pinger.get("enabled") else "0")
         DB.set_setting("pinger_url", pinger.get("url", ""))
         DB.set_setting("pinger_interval", str(pinger.get("interval", 300)))
-        
-        # Xử lý accounts
         accounts = data.get("accounts", {})
-        # Xóa hết cái cũ
         all_old = DB.get_all_accounts()
         for old in all_old: DB.delete_account(old['id'])
-        # Thêm cái mới
-        for aid, acc_data in accounts.items():
-            # Nếu restore file clean, cURL sẽ rỗng, user phải tự nhập sau
-            DB.save_account(aid, acc_data)
-            
+        for aid, acc_data in accounts.items(): DB.save_account(aid, acc_data)
         SERVICE.reload_processors()
         return {"status": "success", "message": f"Đã khôi phục {len(accounts)} shop thành công!"}
-    except Exception as e:
-        return JSONResponse(status_code=400, content={"status": "error", "message": str(e)})
-
+    except Exception as e: return JSONResponse(status_code=400, content={"status": "error", "message": str(e)})
 
 # ==============================================================================
 # 6. FRONTEND
@@ -557,45 +521,21 @@ HTML_DASHBOARD = f"""
         input, select, textarea {{ width: 100%; background: rgba(0,0,0,0.6); border: 1px solid #333; color: #fff; padding: 12px; border-radius: 8px; font-family: monospace; transition: 0.3s; }}
         input:focus, textarea:focus {{ border-color: var(--neon-cyan); box-shadow: 0 0 15px rgba(0,243,255,0.2); }}
         .row {{ display: flex; gap: 20px; flex-wrap: wrap; }} .col {{ flex: 1; min-width: 250px; }}
-        
-        /* BUTTON STYLES */
-        .btn {{ padding: 12px 30px; border: none; border-radius: 5px; font-family: 'Orbitron'; font-weight: bold; cursor: pointer; color: #fff; background: linear-gradient(135deg, var(--neon-cyan), #0066ff); transition: 0.3s; }}
+        .btn {{ padding: 12px 30px; border: none; border-radius: 5px; font-family: 'Orbitron'; font-weight: bold; cursor: pointer; color: #fff; background: linear-gradient(135deg, var(--neon-cyan), #0066ff); }}
         .btn:hover {{ transform: scale(1.02); box-shadow: 0 0 20px rgba(0,243,255,0.5); }}
-        
         .btn-danger {{ background: transparent; border: 1px solid #ff3333; color: #ff3333; }}
         .btn-danger:hover {{ background: #ff3333; color: white; }}
-        
-        /* NEON BUTTON FOR ADD SHOP */
-        .btn-highlight {{ 
-            background: linear-gradient(90deg, #00f3ff, #0066ff); 
-            color: #fff; font-weight: 900; 
-            border: 1px solid #fff;
-            box-shadow: 0 0 15px #00f3ff;
-            text-shadow: 0 0 5px rgba(0,0,0,0.5);
-            font-size: 1rem;
-        }}
-        .btn-highlight:hover {{ 
-            background: #fff; color: #000;
-            box-shadow: 0 0 25px #00f3ff;
-        }}
-        
+        .btn-highlight {{ background: linear-gradient(90deg, #00f3ff, #0066ff); color: #fff; font-weight: 900; border: 1px solid #fff; box-shadow: 0 0 15px #00f3ff; text-shadow: 0 0 5px rgba(0,0,0,0.5); font-size: 1rem; }}
+        .btn-highlight:hover {{ background: #fff; color: #000; box-shadow: 0 0 25px #00f3ff; }}
         .btn-logout {{ background: rgba(255,255,255,0.1); border: 1px solid #fff; padding: 8px 20px; font-size: 0.9rem; text-decoration: none; display: inline-block; color: #fff; border-radius: 5px; }}
-        
         .account-card {{ background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1); padding: 20px; border-radius: 10px; margin-bottom: 20px; position: relative; }}
         .chart-container {{ height: 300px; width: 100%; background: rgba(0,0,0,0.3); border-radius: 10px; padding: 10px; margin-top: 20px; display: flex; align-items: flex-end; gap: 10px; }}
         .footer {{ text-align: center; margin-top: 50px; color: #666; padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.1); }}
         #loader {{ position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #000; z-index: 9999; display: flex; justify-content: center; align-items: center; transition: opacity 0.5s; }}
         .spinner {{ width: 60px; height: 60px; border: 5px solid rgba(255,255,255,0.1); border-top: 5px solid var(--neon-cyan); border-radius: 50%; animation: spin 1s linear infinite; }}
         @keyframes spin {{ 0% {{ transform: rotate(0deg); }} 100% {{ transform: rotate(360deg); }} }}
-        
-        /* Upload Input Hidden */
         input[type="file"] {{ display: none; }}
-        .upload-label {{
-            display: inline-block; padding: 12px 30px;
-            background: rgba(255,255,255,0.1); border: 1px dashed #aaa;
-            border-radius: 5px; cursor: pointer; font-family: 'Orbitron'; font-size: 0.9rem;
-            color: #ccc; transition: 0.3s; text-align: center;
-        }}
+        .upload-label {{ display: inline-block; padding: 12px 30px; background: rgba(255,255,255,0.1); border: 1px dashed #aaa; border-radius: 5px; cursor: pointer; font-family: 'Orbitron'; font-size: 0.9rem; color: #ccc; transition: 0.3s; text-align: center; }}
         .upload-label:hover {{ background: rgba(255,255,255,0.2); color: #fff; border-color: #fff; }}
     </style>
 </head>
@@ -647,14 +587,9 @@ HTML_DASHBOARD = f"""
         
         <div class="panel" style="margin-top: 50px;">
             <h2>💾 SAO LƯU & KHÔI PHỤC (JSON)</h2>
-            <div style="color: #aaa; margin-bottom: 15px; font-size: 0.9rem;">
-                * Backup sẽ chỉ lưu: Tên Shop, Token, Chat ID và Cấu hình chung. <br>
-                * cURL sẽ <b>KHÔNG</b> được lưu (để trống) vì cookie thay đổi liên tục.
-            </div>
+            <div style="color: #aaa; margin-bottom: 15px; font-size: 0.9rem;">* Backup sẽ chỉ lưu: Tên Shop, Token, Chat ID và Cấu hình chung. <br>* cURL sẽ <b>KHÔNG</b> được lưu (để trống) vì cookie thay đổi liên tục.</div>
             <div class="row">
-                <div class="col">
-                    <a href="/api/backup/download" target="_blank" class="btn" style="display:block; text-align:center; text-decoration:none; background: #28a745;">⬇️ TẢI FILE BACKUP</a>
-                </div>
+                <div class="col"><a href="/api/backup/download" target="_blank" class="btn" style="display:block; text-align:center; text-decoration:none; background: #28a745;">⬇️ TẢI FILE BACKUP</a></div>
                 <div class="col" style="display:flex; gap:10px; align-items:center;">
                     <label for="restoreFile" class="upload-label" style="flex:1">📂 CHỌN FILE RESTORE...</label>
                     <input type="file" id="restoreFile" accept=".json">
@@ -667,7 +602,6 @@ HTML_DASHBOARD = f"""
     </div>
 
     <script>
-        // Canvas
         const canvas = document.getElementById('starfield'); const ctx = canvas.getContext('2d');
         let width, height, stars = [];
         function resize() {{ width=window.innerWidth; height=window.innerHeight; canvas.width=width; canvas.height=height; }}
@@ -675,17 +609,20 @@ HTML_DASHBOARD = f"""
         function loop() {{ ctx.fillStyle="rgba(5,5,16,0.4)"; ctx.fillRect(0,0,width,height); stars.forEach(s=>{{ s.update(); s.draw(); }}); requestAnimationFrame(loop); }}
         window.addEventListener('resize',resize); resize(); for(let i=0;i<800;i++) stars.push(new Star()); loop();
 
-        // Logic
         const api={{ getConfig:async()=>(await fetch('/api/config')).json(), saveConfig:async(d)=>(await fetch('/api/config',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify(d)}})).json(), getStats:async()=>(await fetch('/api/stats')).json() }};
+        
+        // [FIX] Sửa logic lấy dữ liệu từ form Shop
         function renderAccount(id, d={{}}) {{
             const el=document.createElement('div'); el.className='account-card'; el.dataset.id=id;
             el.innerHTML=`<div style="display:flex; justify-content:space-between; margin-bottom:10px;"><strong>${{d.account_name||'Shop Mới'}}</strong><button type="button" class="btn btn-danger" onclick="this.closest('.account-card').remove()">XOÁ</button></div>
-            <div class="row"><div class="col"><label>Tên Shop:</label><input type="text" class="n" value="${{d.account_name||''}}" required></div><div class="col"><label>Token:</label><input type="password" class="t" value="${{d.bot_token||''}}" required></div></div>
-            <div style="margin-top:10px"><label>Notify cURL:</label><textarea class="cn" rows="2">${{d.notify_curl||''}}</textarea></div>
-            <div style="margin-top:10px"><label>Chat cURL:</label><textarea class="cc" rows="2">${{d.chat_curl||''}}</textarea></div>`;
+            <div class="row"><div class="col"><label>Tên Shop:</label><input type="text" class="acc-name" value="${{d.account_name||''}}" required></div><div class="col"><label>Token:</label><input type="password" class="acc-token" value="${{d.bot_token||''}}" required></div></div>
+            <div style="margin-top:10px"><label>Notify cURL:</label><textarea class="acc-notify" rows="2">${{d.notify_curl||''}}</textarea></div>
+            <div style="margin-top:10px"><label>Chat cURL:</label><textarea class="acc-chat" rows="2">${{d.chat_curl||''}}</textarea></div>`;
             document.getElementById('acc_list').appendChild(el);
         }}
+        
         function addAccount(){{ renderAccount(crypto.randomUUID()); }}
+        
         async function init() {{
             try {{
                 const conf = await api.getConfig();
@@ -695,12 +632,10 @@ HTML_DASHBOARD = f"""
                 document.getElementById('p_url').value = conf.pinger.url;
                 document.getElementById('p_interval').value = conf.pinger.interval;
                 document.getElementById('acc_list').innerHTML=''; (conf.accounts||[]).forEach(a=>renderAccount(a.id, a));
-                
                 const stats = await api.getStats();
                 const chart = document.getElementById('chart-area');
                 if(stats.data && stats.data.length) {{
-                    const max = Math.max(...stats.data, 10);
-                    chart.innerHTML = '';
+                    const max = Math.max(...stats.data, 10); chart.innerHTML = '';
                     stats.data.forEach((val, i) => {{
                         const bar = document.createElement('div');
                         bar.style.cssText = `flex:1; background:linear-gradient(to top, var(--neon-cyan), var(--neon-pink)); height:${{(val/max)*100}}%; border-radius:4px 4px 0 0; position:relative; min-height:5px; transition:height 1s;`;
@@ -710,39 +645,48 @@ HTML_DASHBOARD = f"""
                 }} else {{ chart.innerHTML = '<div style="width:100%; text-align:center; color:#666;">Chưa có dữ liệu</div>'; }}
             }} catch(e){{ console.error(e); }} finally {{ document.getElementById('loader').style.opacity='0'; setTimeout(()=>document.getElementById('loader').remove(),500); }}
         }}
+        
+        // [FIX] Logic Save lấy đúng class name
         document.getElementById('mainForm').onsubmit = async(e) => {{
             e.preventDefault();
-            const accounts={{}}; document.querySelectorAll('.account-card').forEach(el=>{{ accounts[el.dataset.id]={{account_name:el.querySelector('.n').value, bot_token:el.querySelector('.t').value, notify_curl:el.querySelector('.cn').value, chat_curl:el.querySelector('.cc').value}}; }});
-            const payload={{ global_chat_id:document.getElementById('gid').value, poll_interval:parseInt(document.getElementById('poll_int').value), pinger:{{enabled:document.getElementById('p_enable').value==="1", url:document.getElementById('p_url').value, interval:parseInt(document.getElementById('p_interval').value)}}, accounts:accounts }};
+            const accounts={{}}; 
+            document.querySelectorAll('.account-card').forEach(el=>{{ 
+                const id = el.dataset.id;
+                accounts[id]={{
+                    account_name: el.querySelector('.acc-name').value,
+                    bot_token: el.querySelector('.acc-token').value,
+                    notify_curl: el.querySelector('.acc-notify').value,
+                    chat_curl: el.querySelector('.acc-chat').value
+                }}; 
+            }});
+            const payload={{ 
+                global_chat_id:document.getElementById('gid').value, 
+                poll_interval:parseInt(document.getElementById('poll_int').value), 
+                pinger:{{
+                    enabled:document.getElementById('p_enable').value==="1", 
+                    url:document.getElementById('p_url').value, 
+                    interval:parseInt(document.getElementById('p_interval').value)
+                }}, 
+                accounts:accounts 
+            }};
             await api.saveConfig(payload); alert('ĐÃ LƯU CẤU HÌNH THÀNH CÔNG!'); location.reload();
         }};
         
-        // Handle File Input Name
         document.getElementById('restoreFile').addEventListener('change', function() {{
             const label = document.querySelector('.upload-label');
             if(this.files && this.files.length > 0) label.innerText = "📄 " + this.files[0].name;
         }});
-
         async function doRestore() {{
             const fileInput = document.getElementById('restoreFile');
             if(!fileInput.files.length) {{ alert('Vui lòng chọn file JSON backup!'); return; }}
             if(!confirm('Bạn có chắc muốn khôi phục? Dữ liệu hiện tại sẽ bị thay thế!')) return;
-            
-            const formData = new FormData();
-            formData.append('file', fileInput.files[0]);
-            
+            const formData = new FormData(); formData.append('file', fileInput.files[0]);
             try {{
                 const res = await fetch('/api/backup/restore', {{ method: 'POST', body: formData }});
                 const result = await res.json();
-                if(result.status === 'success') {{
-                    alert(result.message);
-                    location.reload();
-                }} else {{
-                    alert('Lỗi: ' + result.message);
-                }}
+                if(result.status === 'success') {{ alert(result.message); location.reload(); }} else {{ alert('Lỗi: ' + result.message); }}
             }} catch(e) {{ alert('Lỗi upload: ' + e); }}
         }}
-        
         init();
     </script>
 </body>
