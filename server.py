@@ -1,6 +1,6 @@
 """
 PROJECT: TAPHOAMMO GALAXY ENTERPRISE
-VERSION: 26.0 (Final Notification UI)
+VERSION: 27.0 (Pre-order & 24h Time Format)
 AUTHOR: AI ASSISTANT & ADMIN VAN LINH
 LICENSE: PROPRIETARY
 """
@@ -38,7 +38,7 @@ except ImportError:
 
 class SystemConfig:
     APP_NAME = "TapHoaMMO Enterprise"
-    VERSION = "26.0.0"
+    VERSION = "27.0.0"
     DATABASE_FILE = "galaxy_data.db"
     LOG_FILE = "system_run.log"
     
@@ -190,7 +190,14 @@ class Utils:
     @staticmethod
     def get_labels(length: int) -> List[str]:
         labels = [f"Mục {i+1}" for i in range(length)]
-        mapping = { 0: "Đơn hàng sản phẩm", 1: "Đánh giá", 7: "Khiếu nại", 8: "Tin nhắn" }
+        # [UPDATED v27.0] Thêm cột 6 (index 5) là Đặt hàng trước
+        mapping = { 
+            0: "Đơn hàng sản phẩm", 
+            1: "Đánh giá",
+            5: "Đặt hàng trước", # Index 5 tương ứng cột 6
+            7: "Khiếu nại", 
+            8: "Tin nhắn" 
+        }
         for idx, name in mapping.items():
             if idx < length: labels[idx] = name
         return labels
@@ -202,6 +209,7 @@ class Utils:
         if "khiếu nại" in low: return "⚠️"
         if "đánh giá" in low: return "⭐"
         if "tin nhắn" in low: return "✉️"
+        if "đặt hàng trước" in low: return "⏳" # Icon mới cho Đặt hàng trước
         return "🔹"
 
 class AccountProcessor:
@@ -278,27 +286,16 @@ class AccountProcessor:
                         if "tin nhắn" in lbl.lower(): check_chat = True
                     
                     if val > 0 and val > old:
-                         alerts.append(f"{Utils.get_icon(lbl)} {lbl}: 1") # Luôn hiện 1 nếu có tăng (đơn giản hóa cho icon)
-                         # Nhưng để chính xác thì nên hiện val (tổng) hoặc (val-old)
-                         # Theo yêu cầu: "Đơn hàng sản phẩm: 1"
-                         # Mình sẽ hiện tổng số đơn mới tăng thêm
-                         alerts[-1] = f"{Utils.get_icon(lbl)} {lbl}: {val - old}"
-                         
-                    # Logic cũ: Hiện tổng
-                    if val > 0 and val > old:
-                        alerts[-1] = f"{Utils.get_icon(lbl)} {lbl}: {val}"
-
+                         alerts.append(f"{Utils.get_icon(lbl)} {lbl}: <code>{val}</code>")
+                
                 chat_msgs = self.fetch_chats(is_baseline) if check_chat else []
                 
-                # [CẬP NHẬT v26.0] UI Giống ảnh mẫu
                 if has_change and not is_baseline:
-                    # Format giờ: 7:43 SA
-                    now = datetime.now(timezone(timedelta(hours=7)))
-                    time_str = now.strftime("%I:%M %p").replace("AM", "SA").replace("PM", "CH")
-                    if time_str.startswith("0"): time_str = time_str[1:] # Bỏ số 0 đầu (07:43 -> 7:43)
-
+                    # [UPDATED v27.0] Format 24h + Ngày tháng năm (HH:MM - DD/MM/YYYY)
+                    timestamp = datetime.now(timezone(timedelta(hours=7))).strftime("%H:%M - %d/%m/%Y")
+                    
                     msg_lines = [f"⭐ <b>BÁO CÁO NHANH - [{html.escape(self.name)}]</b>"]
-                    msg_lines.append("<code>- - - - - - - - - - - -</code>") # Dòng kẻ đứt
+                    msg_lines.append("<code>- - - - - - - - - - - -</code>")
                     msg_lines.append("🔔 <b>BẠN CÓ THÔNG BÁO MỚI:</b>")
                     
                     if alerts: msg_lines.extend(alerts)
@@ -306,8 +303,7 @@ class AccountProcessor:
                         msg_lines.append("<b>💬 Tin nhắn:</b>")
                         msg_lines.extend(chat_msgs)
                     
-                    # Thời gian ở cuối cùng
-                    msg_lines.append(f"\n<i>{time_str}</i>")
+                    msg_lines.append(f"\n<i>{timestamp}</i>")
                     
                     self.send_tele(global_chat_id, "\n".join(msg_lines))
                 
