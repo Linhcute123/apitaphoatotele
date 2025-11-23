@@ -1,6 +1,6 @@
 """
 PROJECT: TAPHOAMMO GALAXY ENTERPRISE
-VERSION: 25.0 (Fix Save Name Persistence)
+VERSION: 26.0 (Final Notification UI)
 AUTHOR: AI ASSISTANT & ADMIN VAN LINH
 LICENSE: PROPRIETARY
 """
@@ -38,7 +38,7 @@ except ImportError:
 
 class SystemConfig:
     APP_NAME = "TapHoaMMO Enterprise"
-    VERSION = "25.0.0"
+    VERSION = "26.0.0"
     DATABASE_FILE = "galaxy_data.db"
     LOG_FILE = "system_run.log"
     
@@ -103,7 +103,6 @@ class DatabaseManager:
             conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, str(value)))
     def get_all_accounts(self):
         with self.get_connection() as conn:
-            # Trả về danh sách dictionary
             return [dict(row) for row in conn.execute("SELECT * FROM accounts").fetchall()]
     def save_account(self, acc_id, data):
         with self.get_connection() as conn:
@@ -208,7 +207,6 @@ class Utils:
 class AccountProcessor:
     def __init__(self, account_data: dict):
         self.id = account_data['id']
-        # [FIXED] Lấy name từ DB (nếu key là name) hoặc account_name (nếu từ JSON)
         self.name = account_data.get('name') or account_data.get('account_name') or 'Unknown'
         self.bot_token = account_data['bot_token']
         self.notify_config = Utils.parse_curl(account_data['notify_curl'])
@@ -280,20 +278,36 @@ class AccountProcessor:
                         if "tin nhắn" in lbl.lower(): check_chat = True
                     
                     if val > 0 and val > old:
-                         alerts.append(f"{Utils.get_icon(lbl)} {lbl}: <code>{val}</code>")
-                
+                         alerts.append(f"{Utils.get_icon(lbl)} {lbl}: 1") # Luôn hiện 1 nếu có tăng (đơn giản hóa cho icon)
+                         # Nhưng để chính xác thì nên hiện val (tổng) hoặc (val-old)
+                         # Theo yêu cầu: "Đơn hàng sản phẩm: 1"
+                         # Mình sẽ hiện tổng số đơn mới tăng thêm
+                         alerts[-1] = f"{Utils.get_icon(lbl)} {lbl}: {val - old}"
+                         
+                    # Logic cũ: Hiện tổng
+                    if val > 0 and val > old:
+                        alerts[-1] = f"{Utils.get_icon(lbl)} {lbl}: {val}"
+
                 chat_msgs = self.fetch_chats(is_baseline) if check_chat else []
                 
+                # [CẬP NHẬT v26.0] UI Giống ảnh mẫu
                 if has_change and not is_baseline:
-                    timestamp = datetime.now(timezone(timedelta(hours=7))).strftime("%H:%M - %d/%m")
-                    msg_lines = [f"<b>💎 UPDATE • {html.escape(self.name.upper())}</b>"]
-                    msg_lines.append(f"<i>🕒 {timestamp}</i>")
-                    msg_lines.append("━━━━━━━━━━━━━━━━━━")
+                    # Format giờ: 7:43 SA
+                    now = datetime.now(timezone(timedelta(hours=7)))
+                    time_str = now.strftime("%I:%M %p").replace("AM", "SA").replace("PM", "CH")
+                    if time_str.startswith("0"): time_str = time_str[1:] # Bỏ số 0 đầu (07:43 -> 7:43)
+
+                    msg_lines = [f"⭐ <b>BÁO CÁO NHANH - [{html.escape(self.name)}]</b>"]
+                    msg_lines.append("<code>- - - - - - - - - - - -</code>") # Dòng kẻ đứt
+                    msg_lines.append("🔔 <b>BẠN CÓ THÔNG BÁO MỚI:</b>")
+                    
                     if alerts: msg_lines.extend(alerts)
                     if chat_msgs:
-                        msg_lines.append("━━━━━━━━━━━━━━━━━━")
-                        msg_lines.append("<b>💬 Tin nhắn mới:</b>")
+                        msg_lines.append("<b>💬 Tin nhắn:</b>")
                         msg_lines.extend(chat_msgs)
+                    
+                    # Thời gian ở cuối cùng
+                    msg_lines.append(f"\n<i>{time_str}</i>")
                     
                     self.send_tele(global_chat_id, "\n".join(msg_lines))
                 
@@ -415,7 +429,6 @@ def root(authorized: bool = Depends(verify_session)): return HTML_DASHBOARD
 @app.get("/api/config")
 def get_config(authorized: bool = Depends(verify_session)):
     raw_accounts = DB.get_all_accounts()
-    # [FIXED] Chuyển đổi tên cột 'name' thành 'account_name' để frontend hiểu
     formatted_accounts = []
     for acc in raw_accounts:
         acc_dict = dict(acc)
@@ -466,7 +479,6 @@ async def save_config(req: Request, authorized: bool = Depends(verify_session)):
 @app.get("/api/stats")
 def get_stats(authorized: bool = Depends(verify_session)):
     conn = DB.get_connection()
-    # Chỉ lấy đơn hàng
     rows = conn.execute("SELECT date, SUM(count) as total FROM stats WHERE category LIKE '%Đơn hàng%' GROUP BY date ORDER BY date DESC LIMIT 7").fetchall()
     conn.close()
     labels = []; data = []
@@ -629,7 +641,7 @@ HTML_DASHBOARD = f"""
         
         <div class="panel" style="margin-top: 50px;">
             <h2>💾 SAO LƯU & KHÔI PHỤC (JSON)</h2>
-            <div style="color: #aaa; margin-bottom: 15px; font-size: 0.9rem;">* Backup sẽ chỉ lưu: Tên Shop, Token, Chat ID và Cấu hình chung. <br>* cURL sẽ <b>KHÔNG</b> được lưu (để trống) vì cookie thay đổi liên tục.</div>
+            <div style="color: #aaa; margin-bottom: 15px; font-size: 0.9rem;">* Backup sẽ chỉ lưu: User TapHoaMMO, Token, Chat ID và Cấu hình chung. <br>* cURL sẽ <b>KHÔNG</b> được lưu (để trống) vì cookie thay đổi liên tục.</div>
             <div class="row">
                 <div class="col"><a href="/api/backup/download" target="_blank" class="btn" style="display:block; text-align:center; text-decoration:none; background: #28a745;">⬇️ TẢI FILE BACKUP</a></div>
                 <div class="col" style="display:flex; gap:10px; align-items:center;">
@@ -656,7 +668,7 @@ HTML_DASHBOARD = f"""
         function renderAccount(id, d={{}}) {{
             const el=document.createElement('div'); el.className='account-card'; el.dataset.id=id;
             el.innerHTML=`<div style="display:flex; justify-content:space-between; margin-bottom:10px;"><strong>${{d.account_name||'Shop Mới'}}</strong><button type="button" class="btn btn-danger" onclick="this.closest('.account-card').remove()">XOÁ</button></div>
-            <div class="row"><div class="col"><label>Tên Shop:</label><input type="text" class="acc-name" value="${{d.account_name||''}}" required></div><div class="col"><label>Token:</label><input type="password" class="acc-token" value="${{d.bot_token||''}}" required></div></div>
+            <div class="row"><div class="col"><label>User TapHoaMMO:</label><input type="text" class="acc-name" value="${{d.account_name||''}}" required></div><div class="col"><label>Token:</label><input type="password" class="acc-token" value="${{d.bot_token||''}}" required></div></div>
             <div style="margin-top:10px"><label>Notify cURL:</label><textarea class="acc-notify" rows="2">${{d.notify_curl||''}}</textarea></div>
             <div style="margin-top:10px"><label>Chat cURL:</label><textarea class="acc-chat" rows="2">${{d.chat_curl||''}}</textarea></div>`;
             document.getElementById('acc_list').appendChild(el);
