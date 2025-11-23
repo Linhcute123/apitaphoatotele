@@ -1,6 +1,6 @@
 """
 PROJECT: TAPHOAMMO GALAXY ENTERPRISE
-VERSION: 27.0 (Pre-order & 24h Time Format)
+VERSION: 29.0 (Service Icon Update)
 AUTHOR: AI ASSISTANT & ADMIN VAN LINH
 LICENSE: PROPRIETARY
 """
@@ -38,7 +38,7 @@ except ImportError:
 
 class SystemConfig:
     APP_NAME = "TapHoaMMO Enterprise"
-    VERSION = "27.0.0"
+    VERSION = "29.0.0"
     DATABASE_FILE = "galaxy_data.db"
     LOG_FILE = "system_run.log"
     
@@ -154,7 +154,7 @@ class BackupManager:
         except Exception as e: SYS_LOG.error(f"❌ Auto-backup failed: {e}")
 
 # ==============================================================================
-# 4. CORE LOGIC
+# 4. CORE LOGIC (ICON UPDATE)
 # ==============================================================================
 
 class Utils:
@@ -190,11 +190,11 @@ class Utils:
     @staticmethod
     def get_labels(length: int) -> List[str]:
         labels = [f"Mục {i+1}" for i in range(length)]
-        # [UPDATED v27.0] Thêm cột 6 (index 5) là Đặt hàng trước
         mapping = { 
             0: "Đơn hàng sản phẩm", 
             1: "Đánh giá",
-            5: "Đặt hàng trước", # Index 5 tương ứng cột 6
+            5: "Đặt hàng trước",
+            6: "Đơn hàng dịch vụ", 
             7: "Khiếu nại", 
             8: "Tin nhắn" 
         }
@@ -209,7 +209,8 @@ class Utils:
         if "khiếu nại" in low: return "⚠️"
         if "đánh giá" in low: return "⭐"
         if "tin nhắn" in low: return "✉️"
-        if "đặt hàng trước" in low: return "⏳" # Icon mới cho Đặt hàng trước
+        if "đặt hàng trước" in low: return "⏳"
+        if "dịch vụ" in low: return "🛎️" # [UPDATED v29.0] Icon Chuông cho dịch vụ
         return "🔹"
 
 class AccountProcessor:
@@ -286,14 +287,11 @@ class AccountProcessor:
                         if "tin nhắn" in lbl.lower(): check_chat = True
                     
                     if val > 0 and val > old:
-                         alerts.append(f"{Utils.get_icon(lbl)} {lbl}: <code>{val}</code>")
+                         alerts.append(f"{Utils.get_icon(lbl)} {lbl}: <b>{val}</b>")
                 
                 chat_msgs = self.fetch_chats(is_baseline) if check_chat else []
                 
                 if has_change and not is_baseline:
-                    # [UPDATED v27.0] Format 24h + Ngày tháng năm (HH:MM - DD/MM/YYYY)
-                    timestamp = datetime.now(timezone(timedelta(hours=7))).strftime("%H:%M - %d/%m/%Y")
-                    
                     msg_lines = [f"⭐ <b>BÁO CÁO NHANH - [{html.escape(self.name)}]</b>"]
                     msg_lines.append("<code>- - - - - - - - - - - -</code>")
                     msg_lines.append("🔔 <b>BẠN CÓ THÔNG BÁO MỚI:</b>")
@@ -302,8 +300,6 @@ class AccountProcessor:
                     if chat_msgs:
                         msg_lines.append("<b>💬 Tin nhắn:</b>")
                         msg_lines.extend(chat_msgs)
-                    
-                    msg_lines.append(f"\n<i>{timestamp}</i>")
                     
                     self.send_tele(global_chat_id, "\n".join(msg_lines))
                 
@@ -348,12 +344,10 @@ class BackgroundService:
         
         if not token_to_use: return
 
-        timestamp = datetime.now(timezone(timedelta(hours=7))).strftime("%H:%M:%S - %d/%m/%Y")
         msg = (
             f"🚀 <b>HỆ THỐNG ĐÃ KHỞI ĐỘNG!</b> 🚀\n\n"
             f"👑 <b>Bot đã sẵn sàng phục vụ Chủ Nhân!</b>\n"
-            f"💎 Trạng thái: <code>ONLINE</code>\n"
-            f"⏱️ Thời gian: {timestamp}\n\n"
+            f"💎 Trạng thái: <code>ONLINE</code>\n\n"
             f"<i>Chúc Chủ Nhân một ngày bão đơn! 💸💸💸</i>"
         )
         try:
@@ -475,6 +469,7 @@ async def save_config(req: Request, authorized: bool = Depends(verify_session)):
 @app.get("/api/stats")
 def get_stats(authorized: bool = Depends(verify_session)):
     conn = DB.get_connection()
+    # Chỉ lấy đơn hàng
     rows = conn.execute("SELECT date, SUM(count) as total FROM stats WHERE category LIKE '%Đơn hàng%' GROUP BY date ORDER BY date DESC LIMIT 7").fetchall()
     conn.close()
     labels = []; data = []
