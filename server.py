@@ -1,6 +1,6 @@
 """
 PROJECT: TAPHOAMMO GALAXY ENTERPRISE
-VERSION: 32.0 (ULTRA UI - ACCORDION LIST - CHARTJS)
+VERSION: 32.1 (ULTRA UI - DEDICATED BACKUP BOX)
 AUTHOR: AI ASSISTANT & ADMIN VAN LINH
 LICENSE: PROPRIETARY
 """
@@ -38,7 +38,7 @@ except ImportError:
 
 class SystemConfig:
     APP_NAME = "TapHoaMMO Enterprise"
-    VERSION = "32.0.0"
+    VERSION = "32.1.0"
     DATABASE_FILE = "galaxy_data.db"
     LOG_FILE = "system_run.log"
     ADMIN_SECRET = os.getenv("ADMIN_SECRET", "admin").strip()
@@ -588,7 +588,7 @@ HTML_DASHBOARD = f"""
     <style>
         :root {{ --neon-cyan: #00f3ff; --neon-pink: #bc13fe; --bg-dark: #050510; --card-bg: rgba(255,255,255,0.03); --border: rgba(255,255,255,0.1); }}
         * {{ box-sizing: border-box; outline: none; }}
-        body {{ margin: 0; background: var(--bg-dark); color: #fff; font-family: 'Rajdhani', sans-serif; min-height: 100vh; overflow-x: hidden; }}
+        body {{ margin: 0; background: var(--bg-dark); color: #fff; font-family: 'Rajdhani', sans-serif; min-height: 100vh; overflow-x: hidden; padding-bottom: 80px; }}
         #bg-canvas {{ position: fixed; inset: 0; z-index: -1; }}
         
         .container {{ max-width: 1200px; margin: 0 auto; padding: 20px; }}
@@ -619,9 +619,14 @@ HTML_DASHBOARD = f"""
         input, select, textarea {{ width: 100%; background: #000; border: 1px solid #333; color: #fff; padding: 10px; border-radius: 5px; font-family: monospace; transition: 0.3s; }}
         input:focus {{ border-color: var(--neon-cyan); }}
 
+        /* BUTTONS */
+        .btn-act {{ border: none; color: #fff; padding: 10px 20px; border-radius: 5px; cursor: pointer; font-weight: bold; font-family: 'Orbitron'; transition:0.3s; display:inline-block; text-decoration:none; font-size:0.9rem; text-align:center; }}
+        .btn-act:hover {{ transform: scale(1.05); }}
+        .btn-blue {{ background: linear-gradient(90deg, var(--neon-cyan), #0066ff); }}
+        .btn-purple {{ background: linear-gradient(90deg, #bc13fe, #ff0055); }}
+
         /* SHOP LIST (ACCORDION) */
         .shop-list-header {{ display: flex; justify-content: space-between; align-items: center; background: #111; padding: 15px 20px; border-radius: 8px; margin-bottom: 30px; border: 1px solid var(--border); }}
-        .btn-add {{ background: linear-gradient(90deg, var(--neon-cyan), #00aaff); border: none; color: #fff; padding: 8px 20px; border-radius: 5px; cursor: pointer; font-weight: bold; font-family: 'Orbitron'; }}
         
         .shop-item {{ margin-bottom: 15px; border: 1px solid var(--neon-purple); border-radius: 8px; background: rgba(20, 0, 40, 0.3); overflow: hidden; transition: 0.3s; }}
         .shop-item:hover {{ box-shadow: 0 0 15px rgba(188, 19, 254, 0.2); }}
@@ -635,7 +640,7 @@ HTML_DASHBOARD = f"""
         @keyframes slideDown {{ from {{ opacity: 0; transform: translateY(-10px); }} to {{ opacity: 1; transform: translateY(0); }} }}
 
         /* ACTION BAR */
-        .action-bar {{ position: sticky; bottom: 0; background: rgba(5,5,16,0.9); padding: 20px; text-align: center; border-top: 1px solid var(--border); backdrop-filter: blur(10px); z-index: 100; }}
+        .action-bar {{ position: fixed; bottom: 0; left:0; right:0; background: rgba(5,5,16,0.95); padding: 15px; text-align: center; border-top: 1px solid var(--border); backdrop-filter: blur(10px); z-index: 100; }}
         .btn-save {{ width: 100%; max-width: 400px; padding: 15px; background: linear-gradient(90deg, var(--neon-cyan), #0066ff); border: none; border-radius: 8px; color: #fff; font-family: 'Orbitron'; font-size: 1.1rem; font-weight: bold; cursor: pointer; box-shadow: 0 0 20px rgba(0, 243, 255, 0.3); }}
         .btn-save:hover {{ transform: scale(1.02); }}
 
@@ -705,23 +710,33 @@ HTML_DASHBOARD = f"""
                 </div>
             </div>
 
+            <div class="settings-box" style="border-color: var(--neon-pink);">
+                <div class="section-head" style="color: var(--neon-pink); border-left-color: var(--neon-cyan);">SAO LƯU & KHÔI PHỤC DỮ LIỆU</div>
+                <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:15px;">
+                    <div style="font-size:0.9rem; color:#aaa; max-width: 600px;">
+                        ⚠️ <b>Lưu ý:</b> Hãy tải file Backup thường xuyên để tránh mất dữ liệu.<br>
+                        Hệ thống chỉ chấp nhận file cấu hình định dạng <code>.json</code>.
+                    </div>
+                    <div style="display:flex; gap:15px;">
+                        <a href="/api/backup/download" target="_blank" class="btn-act btn-blue">⬇️ TẢI BACKUP JSON</a>
+                        
+                        <input type="file" id="restoreFile" style="display:none;" accept=".json" onchange="doRestore(this)">
+                        <label for="restoreFile" class="btn-act btn-purple">⬆️ RESTORE FILE</label>
+                    </div>
+                </div>
+            </div>
+
             <div class="shop-list-header">
                 <div style="font-family:'Orbitron'; font-size:1.2rem;">🚀 DANH SÁCH SHOP</div>
-                <button type="button" class="btn-add" onclick="addAccount()">+ THÊM SHOP</button>
+                <button type="button" class="btn-act btn-blue" onclick="addAccount()">+ THÊM SHOP</button>
             </div>
             
             <div id="acc_list"></div>
 
             <div class="action-bar">
-                <button type="submit" class="btn-save">LƯU CẤU HÌNH</button>
+                <button type="submit" class="btn-save">LƯU TẤT CẢ CẤU HÌNH</button>
             </div>
         </form>
-        
-        <div style="margin-top:40px; border-top:1px solid #333; padding-top:20px; text-align:center; color:#555;">
-            <a href="/api/backup/download" target="_blank" style="color:#888; text-decoration:none; margin-right:20px;">⬇️ Tải Backup JSON</a>
-            <input type="file" id="restoreFile" style="display:none;" onchange="doRestore(this)">
-            <label for="restoreFile" style="color:#888; cursor:pointer;">⬆️ Restore Config</label>
-        </div>
     </div>
 
     <script>
@@ -857,13 +872,23 @@ HTML_DASHBOARD = f"""
 
         async function doRestore(input) {{
             if(!input.files.length) return;
-            const fd = new FormData(); fd.append('file', input.files[0]);
+            const file = input.files[0];
+            
+            // Check file type manually as extra security layer
+            if(file.type !== "application/json" && !file.name.endsWith('.json')) {{
+                toast('❌ Chỉ chấp nhận file .JSON!');
+                input.value = ''; // Reset input
+                return;
+            }}
+
+            const fd = new FormData(); fd.append('file', file);
             try {{
+                toast('Đang khôi phục...');
                 const res = await fetch('/api/backup/restore', {{method:'POST',body:fd}});
                 const d = await res.json();
-                toast(d.status==='success'?'Khôi phục thành công!':'Lỗi: '+d.message);
+                toast(d.status==='success'?'✅ Khôi phục thành công!':'❌ Lỗi: '+d.message);
                 if(d.status==='success') setTimeout(()=>location.reload(), 1500);
-            }} catch(e) {{ toast('Lỗi upload'); }}
+            }} catch(e) {{ toast('Lỗi upload file'); }}
         }}
 
         init();
