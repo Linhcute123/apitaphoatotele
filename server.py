@@ -1,6 +1,6 @@
 """
 PROJECT: TAPHOAMMO GALAXY ENTERPRISE
-VERSION: 33.0 (ULTIMATE UI - MATCHING SCREENSHOTS)
+VERSION: 32.0 (ULTRA UI - ACCORDION LIST - CHARTJS)
 AUTHOR: AI ASSISTANT & ADMIN VAN LINH
 LICENSE: PROPRIETARY
 """
@@ -38,7 +38,7 @@ except ImportError:
 
 class SystemConfig:
     APP_NAME = "TapHoaMMO Enterprise"
-    VERSION = "33.0.0"
+    VERSION = "32.0.0"
     DATABASE_FILE = "galaxy_data.db"
     LOG_FILE = "system_run.log"
     ADMIN_SECRET = os.getenv("ADMIN_SECRET", "admin").strip()
@@ -116,6 +116,7 @@ class DatabaseManager:
             conn.execute("DELETE FROM accounts WHERE id = ?", (acc_id,))
     def update_stat(self, acc_id, date, category, amount):
         with self.get_connection() as conn:
+            # Category: 'order' (Đơn hàng), 'msg' (Tin nhắn), 'other'
             row = conn.execute("SELECT count FROM stats WHERE account_id=? AND date=? AND category=?", (acc_id, date, category)).fetchone()
             if row: conn.execute("UPDATE stats SET count=? WHERE account_id=? AND date=? AND category=?", (row['count'] + amount, acc_id, date, category))
             else: conn.execute("INSERT INTO stats (account_id, date, category, count) VALUES (?, ?, ?, ?)", (acc_id, date, category, amount))
@@ -347,11 +348,12 @@ class BackgroundService:
     
     def broadcast_config_success(self, global_chat_id):
         if not global_chat_id: return
-        # Format lại tin nhắn khởi động theo yêu cầu mới
+        vn_time = get_vn_time().strftime('%H:%M:%S')
         msg = (
             f"🚀 <b>HỆ THỐNG ĐÃ KHỞI ĐỘNG!</b> 🚀\n\n"
             f"👑 <b>Bot đã sẵn sàng phục vụ Chủ Nhân!</b>\n"
-            f"💎 Trạng thái: <code>ONLINE</code>\n\n"
+            f"💎 Trạng thái: <code>ONLINE</code>\n"
+            f"🕒 Time: {vn_time}\n\n"
             f"<i>Chúc Chủ Nhân một ngày bão đơn! 💸💸💸</i>"
         )
         with self.lock:
@@ -474,6 +476,7 @@ def get_stats(authorized: bool = Depends(verify_session)):
     rows = conn.execute("SELECT date, category, SUM(count) as total FROM stats GROUP BY date, category ORDER BY date DESC LIMIT 21").fetchall()
     conn.close()
     
+    # Process Data for Chart.js
     dates = []
     orders = {}
     msgs = {}
@@ -486,7 +489,7 @@ def get_stats(authorized: bool = Depends(verify_session)):
         if c == 'order': orders[d] = t
         if c == 'msg': msgs[d] = t
     
-    dates.sort()
+    dates.sort() # Sắp xếp theo ngày tăng dần
     
     order_data = [orders.get(d, 0) for d in dates]
     msg_data = [msgs.get(d, 0) for d in dates]
@@ -534,7 +537,7 @@ async def restore_backup(file: UploadFile = File(...), authorized: bool = Depend
     except Exception as e: return JSONResponse(status_code=400, content={"status": "error", "message": str(e)})
 
 # ==============================================================================
-# 6. FRONTEND (ULTIMATE UI)
+# 6. FRONTEND (VIP PRO MAX UI + ACCORDION + CHARTJS)
 # ==============================================================================
 
 HTML_LOGIN = f"""
@@ -549,7 +552,7 @@ HTML_LOGIN = f"""
         :root {{ --neon-blue: #00f3ff; --neon-purple: #bc13fe; --dark-bg: #0b0b15; }}
         body {{ margin: 0; height: 100vh; background: var(--dark-bg); display: flex; justify-content: center; align-items: center; font-family: 'Rajdhani', sans-serif; overflow: hidden; }}
         .stars {{ position: fixed; inset: 0; z-index: -1; background: radial-gradient(circle at center, #1a1a3a 0%, #000 100%); }}
-        .login-box {{ background: rgba(16, 16, 28, 0.8); border: 1px solid rgba(255, 255, 255, 0.1); padding: 60px 40px; border-radius: 30px; box-shadow: 0 0 60px rgba(0, 243, 255, 0.05); width: 400px; text-align: center; backdrop-filter: blur(10px); }}
+        .login-box {{ background: rgba(16, 16, 28, 0.8); border: 1px solid rgba(255, 255, 255, 0.1); padding: 60px 40px; border-radius: 30px; box-shadow: 0 0 60px rgba(0, 243, 255, 0.05); width: 380px; text-align: center; backdrop-filter: blur(10px); }}
         .logo {{ font-family: 'Orbitron'; font-weight: 900; font-size: 2.2rem; color: #fff; text-transform: uppercase; margin-bottom: 40px; letter-spacing: 2px; text-shadow: 0 0 15px var(--neon-blue); }}
         .logo span {{ color: var(--neon-blue); }}
         input {{ width: 100%; padding: 18px; background: #08080c; border: 1px solid #333; color: #fff; border-radius: 8px; font-size: 1rem; text-align: center; outline: none; margin-bottom: 20px; transition: 0.3s; box-sizing: border-box; }}
@@ -597,27 +600,34 @@ HTML_DASHBOARD = f"""
         .btn-logout {{ border: 1px solid #fff; color: #fff; padding: 5px 15px; text-decoration: none; font-size: 0.8rem; transition: 0.3s; }}
         .btn-logout:hover {{ background: #fff; color: #000; }}
 
+        /* STATS GRID */
+        .stats-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px; }}
+        .stat-card {{ background: var(--card-bg); border: 1px solid var(--border); padding: 20px; border-radius: 10px; position: relative; overflow: hidden; }}
+        .stat-card::before {{ content: ''; position: absolute; top:0; left:0; width: 3px; height: 100%; background: var(--neon-cyan); box-shadow: 0 0 10px var(--neon-cyan); }}
+        .stat-val {{ font-family: 'Orbitron'; font-size: 1.8rem; font-weight: bold; margin-bottom: 5px; }}
+        .stat-lbl {{ font-size: 0.9rem; color: #aaa; text-transform: uppercase; }}
+        
         /* CHART SECTION */
         .chart-box {{ background: var(--card-bg); border: 1px solid var(--border); padding: 20px; border-radius: 10px; margin-bottom: 30px; }}
-        .section-head {{ font-family: 'Orbitron'; font-size: 1.2rem; color: var(--neon-cyan); margin-bottom: 20px; border-left: 4px solid var(--neon-pink); padding-left: 10px; display: flex; align-items: center; gap: 10px; }}
+        .section-head {{ font-family: 'Orbitron'; font-size: 1.2rem; color: var(--neon-cyan); margin-bottom: 20px; border-left: 4px solid var(--neon-pink); padding-left: 10px; }}
 
         /* GENERAL SETTINGS */
         .settings-box {{ background: var(--card-bg); border: 1px solid var(--border); padding: 20px; border-radius: 10px; margin-bottom: 30px; }}
         .form-row {{ display: flex; gap: 20px; margin-bottom: 15px; }}
         .form-group {{ flex: 1; }}
-        label {{ display: block; color: #aaa; margin-bottom: 8px; font-weight: 600; font-size: 0.85rem; text-transform: uppercase; }}
-        input, select, textarea {{ width: 100%; background: #000; border: 1px solid #333; color: #fff; padding: 12px; border-radius: 5px; font-family: monospace; transition: 0.3s; }}
+        label {{ display: block; color: #aaa; margin-bottom: 8px; font-weight: 600; font-size: 0.85rem; }}
+        input, select, textarea {{ width: 100%; background: #000; border: 1px solid #333; color: #fff; padding: 10px; border-radius: 5px; font-family: monospace; transition: 0.3s; }}
         input:focus {{ border-color: var(--neon-cyan); }}
 
         /* SHOP LIST (ACCORDION) */
         .shop-list-header {{ display: flex; justify-content: space-between; align-items: center; background: #111; padding: 15px 20px; border-radius: 8px; margin-bottom: 30px; border: 1px solid var(--border); }}
-        .btn-add {{ background: linear-gradient(90deg, var(--neon-cyan), #00aaff); border: none; color: #fff; padding: 10px 25px; border-radius: 5px; cursor: pointer; font-weight: bold; font-family: 'Orbitron'; font-size: 0.9rem; box-shadow: 0 0 15px rgba(0, 243, 255, 0.3); }}
+        .btn-add {{ background: linear-gradient(90deg, var(--neon-cyan), #00aaff); border: none; color: #fff; padding: 8px 20px; border-radius: 5px; cursor: pointer; font-weight: bold; font-family: 'Orbitron'; }}
         
-        .shop-item {{ margin-bottom: 15px; border: 1px solid var(--neon-pink); border-radius: 8px; background: rgba(20, 0, 40, 0.3); overflow: hidden; transition: 0.3s; }}
+        .shop-item {{ margin-bottom: 15px; border: 1px solid var(--neon-purple); border-radius: 8px; background: rgba(20, 0, 40, 0.3); overflow: hidden; transition: 0.3s; }}
         .shop-item:hover {{ box-shadow: 0 0 15px rgba(188, 19, 254, 0.2); }}
         .shop-header {{ display: flex; justify-content: space-between; align-items: center; padding: 15px 20px; cursor: pointer; background: rgba(255,255,255,0.02); }}
-        .shop-name {{ font-family: 'Orbitron'; color: var(--neon-pink); font-size: 1.2rem; letter-spacing: 1px; }}
-        .btn-del {{ background: transparent; border: 1px solid #ff4444; color: #ff4444; padding: 8px 20px; border-radius: 4px; font-size: 0.9rem; cursor: pointer; transition: 0.3s; text-transform: uppercase; font-weight: bold; }}
+        .shop-name {{ font-family: 'Orbitron'; color: var(--neon-purple); font-size: 1.1rem; letter-spacing: 1px; }}
+        .btn-del {{ background: transparent; border: 1px solid #ff4444; color: #ff4444; padding: 5px 15px; border-radius: 4px; font-size: 0.8rem; cursor: pointer; transition: 0.3s; text-transform: uppercase; }}
         .btn-del:hover {{ background: #ff4444; color: #fff; }}
         .shop-body {{ padding: 20px; border-top: 1px solid rgba(188, 19, 254, 0.2); display: none; background: rgba(0,0,0,0.2); }}
         .shop-item.active .shop-body {{ display: block; animation: slideDown 0.3s ease; }}
@@ -625,17 +635,9 @@ HTML_DASHBOARD = f"""
         @keyframes slideDown {{ from {{ opacity: 0; transform: translateY(-10px); }} to {{ opacity: 1; transform: translateY(0); }} }}
 
         /* ACTION BAR */
-        .action-bar {{ display: flex; justify-content: center; margin-top: 30px; margin-bottom: 50px; }}
+        .action-bar {{ position: sticky; bottom: 0; background: rgba(5,5,16,0.9); padding: 20px; text-align: center; border-top: 1px solid var(--border); backdrop-filter: blur(10px); z-index: 100; }}
         .btn-save {{ width: 100%; max-width: 400px; padding: 15px; background: linear-gradient(90deg, var(--neon-cyan), #0066ff); border: none; border-radius: 8px; color: #fff; font-family: 'Orbitron'; font-size: 1.1rem; font-weight: bold; cursor: pointer; box-shadow: 0 0 20px rgba(0, 243, 255, 0.3); }}
         .btn-save:hover {{ transform: scale(1.02); }}
-
-        /* BACKUP SECTION */
-        .backup-box {{ border-top: 1px solid #333; margin-top: 50px; padding-top: 30px; }}
-        .backup-controls {{ display: flex; gap: 20px; }}
-        .btn-backup {{ flex: 1; background: #222; border: 1px solid #555; color: #fff; padding: 15px; border-radius: 8px; cursor: pointer; text-decoration: none; display: block; text-align: center; font-weight: bold; transition: 0.3s; }}
-        .btn-backup:hover {{ background: #333; border-color: #fff; }}
-        .btn-restore {{ flex: 1; background: #e6a23c; border: none; color: #000; padding: 15px; border-radius: 8px; cursor: pointer; font-weight: bold; transition: 0.3s; }}
-        .btn-restore:hover {{ filter: brightness(1.1); }}
 
         /* TOAST */
         #toast {{ position: fixed; top: 20px; right: 20px; background: #111; border-left: 4px solid var(--neon-cyan); color: #fff; padding: 15px 25px; border-radius: 5px; transform: translateX(150%); transition: 0.3s; z-index: 9999; box-shadow: 0 5px 20px rgba(0,0,0,0.5); }}
@@ -655,21 +657,41 @@ HTML_DASHBOARD = f"""
             </div>
         </header>
 
+        <div class="section-head">THỐNG KÊ ĐƠN HÀNG (7 NGÀY)</div>
+        
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-val" id="total-orders">0</div>
+                <div class="stat-lbl">TỔNG ĐƠN HÀNG</div>
+            </div>
+            <div class="stat-card" style="border-color: var(--neon-pink);">
+                <div class="stat-val" id="total-msgs" style="color: var(--neon-pink);">0</div>
+                <div class="stat-lbl">TỔNG TIN NHẮN</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-val" id="shop-count">0</div>
+                <div class="stat-lbl">SHOP ĐANG CHẠY</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-val" id="server-time">--:--</div>
+                <div class="stat-lbl">GIỜ HỆ THỐNG (VN)</div>
+            </div>
+        </div>
+
         <div class="chart-box">
-            <div class="section-head">📊 THỐNG KÊ ĐƠN HÀNG (7 NGÀY)</div>
             <canvas id="mainChart" style="width:100%; height:300px;"></canvas>
         </div>
 
         <form id="mainForm">
             <div class="settings-box">
-                <div class="section-head">🔮 CẤU HÌNH CHUNG</div>
-                <div class="form-group" style="margin-bottom: 20px;">
-                    <label>TELEGRAM MASTER ID</label>
+                <div class="section-head">CẤU HÌNH CHUNG</div>
+                <div class="form-group" style="margin-bottom: 15px;">
+                    <label>TELEGRAM MASTER ID:</label>
                     <input type="text" id="gid">
                 </div>
                 <div class="form-row">
                     <div class="form-group">
-                        <label>TỐC ĐỘ QUÉT (Giây)</label>
+                        <label>TỐC ĐỘ QUÉT (Giây):</label>
                         <input type="number" id="poll_int" value="10">
                     </div>
                     <div class="form-group" style="border: 1px dashed var(--neon-cyan); padding: 10px; border-radius: 5px;">
@@ -684,7 +706,7 @@ HTML_DASHBOARD = f"""
             </div>
 
             <div class="shop-list-header">
-                <div style="font-family:'Orbitron'; font-size:1.2rem; color: var(--neon-cyan);">🚀 DANH SÁCH SHOP</div>
+                <div style="font-family:'Orbitron'; font-size:1.2rem;">🚀 DANH SÁCH SHOP</div>
                 <button type="button" class="btn-add" onclick="addAccount()">+ THÊM SHOP</button>
             </div>
             
@@ -695,17 +717,10 @@ HTML_DASHBOARD = f"""
             </div>
         </form>
         
-        <div class="backup-box">
-            <div class="section-head" style="border-left-color: #fff; color: #fff;">💾 BACKUP & RESTORE</div>
-            <div class="backup-controls">
-                <a href="/api/backup/download" target="_blank" class="btn-backup">⬇️ TẢI FILE BACKUP (JSON)</a>
-                <input type="file" id="restoreFile" style="display:none;" onchange="doRestore(this)" accept=".json">
-                <button type="button" class="btn-restore" onclick="document.getElementById('restoreFile').click()">⬆️ KHÔI PHỤC DỮ LIỆU</button>
-            </div>
-        </div>
-        
-        <div style="text-align:center; margin-top:50px; color:#555; font-size:0.8rem;">
-            POWERED BY GALAXY CORE v33.0
+        <div style="margin-top:40px; border-top:1px solid #333; padding-top:20px; text-align:center; color:#555;">
+            <a href="/api/backup/download" target="_blank" style="color:#888; text-decoration:none; margin-right:20px;">⬇️ Tải Backup JSON</a>
+            <input type="file" id="restoreFile" style="display:none;" onchange="doRestore(this)">
+            <label for="restoreFile" style="color:#888; cursor:pointer;">⬆️ Restore Config</label>
         </div>
     </div>
 
@@ -746,6 +761,8 @@ HTML_DASHBOARD = f"""
                     scales: {{ x: {{ ticks: {{ color: '#aaa' }} }}, y: {{ ticks: {{ color: '#aaa' }}, grid: {{ color: '#333' }} }} }}
                 }}
             }});
+            document.getElementById('total-orders').innerText = data.totals.orders;
+            document.getElementById('total-msgs').innerText = data.totals.msgs;
         }}
 
         // --- APP LOGIC ---
@@ -770,21 +787,30 @@ HTML_DASHBOARD = f"""
             div.innerHTML = `
                 <div class="shop-header" onclick="toggleAcc(this)">
                     <div class="shop-name">SHOP: ${{d.account_name||'Mới'}}</div>
-                    <button type="button" class="btn-del" onclick="event.stopPropagation(); this.closest('.shop-item').remove();">XOÁ</button>
+                    <button type="button" class="btn-del" onclick="event.stopPropagation(); this.closest('.shop-item').remove(); updateCount()">XOÁ</button>
                 </div>
                 <div class="shop-body">
                     <div class="form-row">
                         <div class="form-group"><label>TÊN SHOP:</label><input type="text" class="acc-name" value="${{d.account_name||''}}" oninput="this.closest('.shop-item').querySelector('.shop-name').innerText='SHOP: '+this.value"></div>
                         <div class="form-group"><label>TOKEN:</label><input type="password" class="acc-token" value="${{d.bot_token||''}}"></div>
                     </div>
-                    <div class="form-group" style="margin-bottom:15px"><label>NOTIFY CURL:</label><textarea class="acc-notify" rows="2">${{d.notify_curl||''}}</textarea></div>
+                    <div class="form-group"><label>NOTIFY CURL:</label><textarea class="acc-notify" rows="2">${{d.notify_curl||''}}</textarea></div>
                     <div class="form-group"><label>CHAT CURL:</label><textarea class="acc-chat" rows="2">${{d.chat_curl||''}}</textarea></div>
                 </div>
             `;
             document.getElementById('acc_list').appendChild(div);
+            updateCount();
         }}
 
         function addAccount() {{ renderAccount(crypto.randomUUID()); }}
+        function updateCount() {{ document.getElementById('shop-count').innerText = document.querySelectorAll('.shop-item').length; }}
+
+        // CLOCK
+        setInterval(()=>{{
+            const now = new Date();
+            const time = now.toLocaleTimeString('vi-VN', {{timeZone: 'Asia/Ho_Chi_Minh'}});
+            document.getElementById('server-time').innerText = time;
+        }}, 1000);
 
         async function init() {{
             try {{
@@ -796,6 +822,7 @@ HTML_DASHBOARD = f"""
                 document.getElementById('p_interval').value = conf.pinger.interval;
                 document.getElementById('acc_list').innerHTML='';
                 (conf.accounts||[]).forEach(a=>renderAccount(a.id, a));
+                
                 const stats = await api.getStats();
                 renderChart(stats);
             }} catch(e) {{ console.error(e); }}
@@ -830,7 +857,6 @@ HTML_DASHBOARD = f"""
 
         async function doRestore(input) {{
             if(!input.files.length) return;
-            if(!confirm('Dữ liệu hiện tại sẽ bị ghi đè! Tiếp tục?')) return;
             const fd = new FormData(); fd.append('file', input.files[0]);
             try {{
                 const res = await fetch('/api/backup/restore', {{method:'POST',body:fd}});
