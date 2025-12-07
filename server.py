@@ -1,6 +1,6 @@
 """
 PROJECT: TAPHOAMMO GALAXY ENTERPRISE
-VERSION: 33.1 (ULTRA UI - BAR CHART)
+VERSION: 34.0 (ULTRA UI - 30 DAYS STATS - INTEGER CHART)
 AUTHOR: AI ASSISTANT & ADMIN VAN LINH
 LICENSE: PROPRIETARY
 """
@@ -38,7 +38,7 @@ except ImportError:
 
 class SystemConfig:
     APP_NAME = "TapHoaMMO Enterprise"
-    VERSION = "33.1.0"
+    VERSION = "34.0.0"
     DATABASE_FILE = "galaxy_data.db"
     LOG_FILE = "system_run.log"
     ADMIN_SECRET = os.getenv("ADMIN_SECRET", "admin").strip()
@@ -479,13 +479,21 @@ async def save_config(req: Request, authorized: bool = Depends(verify_session)):
 
 @app.get("/api/stats")
 def get_stats(authorized: bool = Depends(verify_session)):
+    # --- LOGIC 30 DAYS STATS ---
+    vn_now = get_vn_time()
+    # Generate list of last 30 days
+    date_list = [(vn_now - timedelta(days=x)).strftime("%Y-%m-%d") for x in range(30)]
+    date_list.reverse() # Sort ascending
+    
+    limit_date = date_list[0] # The oldest date
+    
     conn = DB.get_connection()
-    # Lấy dữ liệu 7 ngày gần nhất cho đơn hàng và tin nhắn
-    rows = conn.execute("SELECT date, category, SUM(count) as total FROM stats GROUP BY date, category ORDER BY date DESC LIMIT 21").fetchall()
+    # Fetch data from oldest date
+    query = "SELECT date, category, SUM(count) as total FROM stats WHERE date >= ? GROUP BY date, category ORDER BY date ASC"
+    rows = conn.execute(query, (limit_date,)).fetchall()
     conn.close()
     
-    # Process Data for Chart.js
-    dates = []
+    # Map data
     orders = {}
     msgs = {}
     
@@ -493,20 +501,19 @@ def get_stats(authorized: bool = Depends(verify_session)):
         d = r['date']
         c = r['category']
         t = r['total']
-        if d not in dates: dates.append(d)
         if c == 'order': orders[d] = t
         if c == 'msg': msgs[d] = t
     
-    dates.sort() # Sắp xếp theo ngày tăng dần
-    
-    order_data = [orders.get(d, 0) for d in dates]
-    msg_data = [msgs.get(d, 0) for d in dates]
+    # Fill missing dates with 0
+    order_data = [orders.get(d, 0) for d in date_list]
+    msg_data = [msgs.get(d, 0) for d in date_list]
     
     total_orders = sum(order_data)
+    # total_msgs is removed from frontend but we can still calculate it if needed internally
     total_msgs = sum(msg_data)
     
     return {
-        "labels": dates,
+        "labels": date_list,
         "datasets": {
             "orders": order_data,
             "msgs": msg_data
@@ -670,17 +677,14 @@ HTML_DASHBOARD = f"""
             </div>
         </header>
 
-        <div class="section-head">THỐNG KÊ ĐƠN HÀNG (7 NGÀY)</div>
+        <div class="section-head">THỐNG KÊ ĐƠN HÀNG (30 NGÀY)</div>
         
         <div class="stats-grid">
             <div class="stat-card">
                 <div class="stat-val" id="total-orders">0</div>
-                <div class="stat-lbl">TỔNG ĐƠN HÀNG</div>
+                <div class="stat-lbl">TỔNG ĐƠN HÀNG (30 NGÀY)</div>
             </div>
-            <div class="stat-card" style="border-color: var(--neon-pink);">
-                <div class="stat-val" id="total-msgs" style="color: var(--neon-pink);">0</div>
-                <div class="stat-lbl">TỔNG TIN NHẮN</div>
-            </div>
+            
             <div class="stat-card">
                 <div class="stat-val" id="shop-count">0</div>
                 <div class="stat-lbl">SHOP ĐANG CHẠY</div>
@@ -781,11 +785,21 @@ HTML_DASHBOARD = f"""
                 options: {{ 
                     responsive: true, maintainAspectRatio: false,
                     plugins: {{ legend: {{ labels: {{ color: '#fff' }} }} }},
-                    scales: {{ x: {{ ticks: {{ color: '#aaa' }} }}, y: {{ ticks: {{ color: '#aaa' }}, grid: {{ color: '#333' }} }} }}
+                    scales: {{ 
+                        x: {{ ticks: {{ color: '#aaa' }} }}, 
+                        y: {{ 
+                            ticks: {{ 
+                                color: '#aaa',
+                                stepSize: 1, // Force integer steps
+                                precision: 0 // No decimals
+                            }}, 
+                            grid: {{ color: '#333' }},
+                            beginAtZero: true
+                        }} 
+                    }}
                 }}
             }});
             document.getElementById('total-orders').innerText = data.totals.orders;
-            document.getElementById('total-msgs').innerText = data.totals.msgs;
         }}
 
         // --- APP LOGIC ---
