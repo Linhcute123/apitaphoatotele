@@ -1,6 +1,6 @@
 """
 PROJECT: TAPHOAMMO GALAXY ENTERPRISE
-VERSION: 32.1 (ULTRA UI - DEDICATED BACKUP BOX)
+VERSION: 33.1 (ULTRA UI - BAR CHART)
 AUTHOR: AI ASSISTANT & ADMIN VAN LINH
 LICENSE: PROPRIETARY
 """
@@ -38,7 +38,7 @@ except ImportError:
 
 class SystemConfig:
     APP_NAME = "TapHoaMMO Enterprise"
-    VERSION = "32.1.0"
+    VERSION = "33.1.0"
     DATABASE_FILE = "galaxy_data.db"
     LOG_FILE = "system_run.log"
     ADMIN_SECRET = os.getenv("ADMIN_SECRET", "admin").strip()
@@ -305,12 +305,20 @@ class AccountProcessor:
                 chat_msgs = self.fetch_chats(is_baseline) if check_chat else []
                 
                 if has_change and not is_baseline:
-                    msg_lines = [f"⭐ <b>[{html.escape(self.name)}] - BIẾN ĐỘNG MỚI</b>"]
-                    msg_lines.append("<code>---------------------------</code>")
-                    if alerts: msg_lines.extend(alerts)
+                    # ==========================================================
+                    # NEW NOTIFICATION FORMAT (MATCHING USER IMAGE)
+                    # ==========================================================
+                    msg_lines = [f"⭐ <b>BÁO CÁO NHANH - [{html.escape(self.name)}]</b>"]
+                    msg_lines.append("<code>_ _ _ _ _ _ _ _ _ _ _ _ _</code>")
+                    
+                    if alerts:
+                        msg_lines.append("🔔 <b>BẠN CÓ THÔNG BÁO MỚI:</b>")
+                        msg_lines.extend(alerts)
+                    
                     if chat_msgs:
-                        msg_lines.append("<b>💬 Tin nhắn chưa đọc:</b>")
+                        msg_lines.append("\n💬 <b>CÓ TIN NHẮN KHÁCH:</b>")
                         msg_lines.extend(chat_msgs)
+
                     self.send_tele(global_chat_id, "\n".join(msg_lines))
                 
                 self.last_notify_nums = nums
@@ -762,12 +770,12 @@ HTML_DASHBOARD = f"""
             const ctx = document.getElementById('mainChart').getContext('2d');
             if(myChart) myChart.destroy();
             myChart = new Chart(ctx, {{
-                type: 'line',
+                type: 'bar',
                 data: {{
                     labels: data.labels,
                     datasets: [
-                        {{ label: 'Đơn Hàng', data: data.datasets.orders, borderColor: '#00f3ff', tension: 0.4, fill: true, backgroundColor: 'rgba(0, 243, 255, 0.1)' }},
-                        {{ label: 'Tin Nhắn', data: data.datasets.msgs, borderColor: '#bc13fe', tension: 0.4, fill: true, backgroundColor: 'rgba(188, 19, 254, 0.1)' }}
+                        {{ label: 'Đơn Hàng', data: data.datasets.orders, backgroundColor: 'rgba(0, 243, 255, 0.6)', borderColor: '#00f3ff', borderWidth: 1 }},
+                        {{ label: 'Tin Nhắn', data: data.datasets.msgs, backgroundColor: 'rgba(188, 19, 254, 0.6)', borderColor: '#bc13fe', borderWidth: 1 }}
                     ]
                 }},
                 options: {{ 
