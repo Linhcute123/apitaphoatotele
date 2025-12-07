@@ -1,6 +1,6 @@
 """
 PROJECT: TAPHOAMMO GALAXY ENTERPRISE
-VERSION: 34.0 (ULTRA UI - 30 DAYS STATS - INTEGER CHART)
+VERSION: 35.0 (ULTRA UI - DYNAMIC DATE LABELS)
 AUTHOR: AI ASSISTANT & ADMIN VAN LINH
 LICENSE: PROPRIETARY
 """
@@ -38,7 +38,7 @@ except ImportError:
 
 class SystemConfig:
     APP_NAME = "TapHoaMMO Enterprise"
-    VERSION = "34.0.0"
+    VERSION = "35.0.0"
     DATABASE_FILE = "galaxy_data.db"
     LOG_FILE = "system_run.log"
     ADMIN_SECRET = os.getenv("ADMIN_SECRET", "admin").strip()
@@ -306,7 +306,7 @@ class AccountProcessor:
                 
                 if has_change and not is_baseline:
                     # ==========================================================
-                    # NEW NOTIFICATION FORMAT (MATCHING USER IMAGE)
+                    # NOTIFICATION FORMAT
                     # ==========================================================
                     msg_lines = [f"⭐ <b>BÁO CÁO NHANH - [{html.escape(self.name)}]</b>"]
                     msg_lines.append("<code>_ _ _ _ _ _ _ _ _ _ _ _ _</code>")
@@ -495,32 +495,33 @@ def get_stats(authorized: bool = Depends(verify_session)):
     
     # Map data
     orders = {}
-    msgs = {}
     
     for r in rows:
         d = r['date']
         c = r['category']
         t = r['total']
         if c == 'order': orders[d] = t
-        if c == 'msg': msgs[d] = t
     
-    # Fill missing dates with 0
-    order_data = [orders.get(d, 0) for d in date_list]
-    msg_data = [msgs.get(d, 0) for d in date_list]
+    # --- LOGIC MỚI: CHỈ LẤY NGÀY CÓ ĐƠN HÀNG > 0 ĐỂ HIỆN LÊN BIỂU ĐỒ ---
+    chart_labels = []
+    chart_orders = []
+    total_orders_30days = 0 # Tính tổng toàn bộ 30 ngày (kể cả ngày ẩn trên chart)
     
-    total_orders = sum(order_data)
-    # total_msgs is removed from frontend but we can still calculate it if needed internally
-    total_msgs = sum(msg_data)
+    for d in date_list:
+        count = orders.get(d, 0)
+        total_orders_30days += count
+        
+        if count > 0: # CHỈ THÊM VÀO BIỂU ĐỒ NẾU CÓ ĐƠN
+            chart_labels.append(d)
+            chart_orders.append(count)
     
     return {
-        "labels": date_list,
+        "labels": chart_labels, # Chỉ chứa ngày có đơn
         "datasets": {
-            "orders": order_data,
-            "msgs": msg_data
+            "orders": chart_orders
         },
         "totals": {
-            "orders": total_orders,
-            "msgs": total_msgs
+            "orders": total_orders_30days # Tổng vẫn đúng 30 ngày
         }
     }
 
@@ -778,8 +779,7 @@ HTML_DASHBOARD = f"""
                 data: {{
                     labels: data.labels,
                     datasets: [
-                        {{ label: 'Đơn Hàng', data: data.datasets.orders, backgroundColor: 'rgba(0, 243, 255, 0.6)', borderColor: '#00f3ff', borderWidth: 1 }},
-                        {{ label: 'Tin Nhắn', data: data.datasets.msgs, backgroundColor: 'rgba(188, 19, 254, 0.6)', borderColor: '#bc13fe', borderWidth: 1 }}
+                        {{ label: 'Đơn Hàng', data: data.datasets.orders, backgroundColor: 'rgba(0, 243, 255, 0.6)', borderColor: '#00f3ff', borderWidth: 1 }}
                     ]
                 }},
                 options: {{ 
@@ -790,8 +790,8 @@ HTML_DASHBOARD = f"""
                         y: {{ 
                             ticks: {{ 
                                 color: '#aaa',
-                                stepSize: 1, // Force integer steps
-                                precision: 0 // No decimals
+                                stepSize: 1, // Integer steps
+                                precision: 0 
                             }}, 
                             grid: {{ color: '#333' }},
                             beginAtZero: true
